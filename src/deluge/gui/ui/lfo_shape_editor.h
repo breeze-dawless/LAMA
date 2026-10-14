@@ -35,9 +35,11 @@ class Sound;
 /// - Upper gold knob: the selected point's height. Press: deletes the selected point.
 /// - Lower gold knob: bends the segment after the selected point. Pressed: bends the segment before it.
 /// - Synth / Kit: previous point, MIDI / CV: next point. With shift: the previous / next page while zoomed in.
-/// - Select encoder: selects points, like the Y encoder. Sidebar pads: jump to a page.
-/// - Back (as printed on it): undo, shift + back: redo. Turning a knob on and on is one step.
-/// - Select press, or holding back: closes the editor. Back closes it too once there's nothing left to undo.
+/// - Select encoder: selects points, like the Y encoder. Shift + select: undo (left) / redo (right), a step per detent.
+/// - Sidebar: the first column's pads jump to a page; in the second column the bottom pad undoes and the one above it
+///   redoes (lit bright while there's a step to take). Turning a knob on and on is one step.
+/// - Back or a select press: closes the editor, as in every menu. The undo history stays for when it opens again on the
+///   same LFO.
 class LFOShapeEditor final : public UI {
 public:
 	LFOShapeEditor() { oledShowsUIUnderneath = false; }
@@ -55,7 +57,7 @@ public:
 	void modEncoderAction(int32_t whichModEncoder, int32_t offset) override;
 	void modEncoderButtonAction(uint8_t whichModEncoder, bool on) override;
 	void modButtonAction(uint8_t whichButton, bool on) override {} // The mod buttons do nothing here
-	ActionResult exitUI() override;                                // Holding back
+	ActionResult exitUI() override;                                // Holding back (if it got here first)
 	bool renderMainPads(uint32_t whichRows, RGB image[][kDisplayWidth + kSideBarWidth],
 	                    uint8_t occupancyMask[][kDisplayWidth + kSideBarWidth], bool drawUndefinedArea) override;
 	bool renderSidebar(uint32_t whichRows, RGB image[][kDisplayWidth + kSideBarWidth],
@@ -70,12 +72,15 @@ public:
 private:
 	static constexpr int32_t kMaxZoomLevel = 3;  ///< x8
 	static constexpr int32_t kMaxSplitLevel = 4; ///< 16 parts per page - one per pad column
+	static constexpr int32_t kUndoPadRow = 0;    ///< In the sidebar's second column
+	static constexpr int32_t kRedoPadRow = 1;
 
 	/// What an edit was, so that turning the same knob on and on makes one undo step
 	enum class Edit : uint8_t { NONE, VALUE, MOVE, BEND_AFTER, BEND_BEFORE, OTHER };
 
-	/// Undo history: the shape after every step (and the point selected then), for this editor session. It lives in
-	/// the general allocator while the editor is open - not in internal RAM.
+	/// Undo history: the shape after every step (and the point selected then), for the LFO edited last. It outlives
+	/// the editor, so coming back to the same LFO can still undo. It lives in the general allocator - not in internal
+	/// RAM.
 	struct State {
 		deluge::modulation::LFOShape shape;
 		int32_t selected;
@@ -91,19 +96,20 @@ private:
 
 	State* history_{nullptr};
 	int32_t historyCount_{0};
-	int32_t historyCursor_{0}; ///< The state shown
+	int32_t historyCursor_{0};           ///< The state shown
+	const Sound* historySound_{nullptr}; ///< Whose LFO the history belongs to - only compared, never followed
+	uint8_t historyLfo_{0};
 	Edit lastEdit_{Edit::NONE};
 	int32_t lastEditPoint_{-1};
 	uint32_t lastEditTime_{0};
-	bool backPressed_{false}; ///< Back went down in here: its release undoes / redoes (holding it closes instead)
 
-	void startHistory();
-	void releaseHistory();
+	void startHistory();       ///< On opening: carries on the history of the same LFO, or starts a new one
 	void beginEdit(Edit edit); ///< Before changing the shape: starts a new undo step unless it carries on the last
 	void commitEdit();         ///< After changing it: records the result
 	void endGesture() { lastEdit_ = Edit::NONE; }
-	void undo();
-	void redo();
+	void stepHistory(int32_t steps); ///< Undo (steps < 0) / redo (steps > 0), as far as the history goes
+	[[nodiscard]] bool canUndo() const { return history_ != nullptr && historyCursor_ > 0; }
+	[[nodiscard]] bool canRedo() const { return history_ != nullptr && historyCursor_ < historyCount_ - 1; }
 	void restore(const State& state);
 	void closeEditor();
 

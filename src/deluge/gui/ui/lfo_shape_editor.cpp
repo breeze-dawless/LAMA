@@ -63,6 +63,20 @@ int32_t percent(int32_t value) {
 	return (value * 100 + (value >= 0 ? LFOShape::kMaxValue / 2 : -LFOShape::kMaxValue / 2)) / LFOShape::kMaxValue;
 }
 
+bool sameShape(const LFOShape& a, const LFOShape& b) {
+	if (a.numPoints() != b.numPoints()) {
+		return false;
+	}
+	for (int32_t i = 0; i < a.numPoints(); i++) {
+		const LFOShape::Point& p = a.point(i);
+		const LFOShape::Point& q = b.point(i);
+		if (p.x != q.x || p.y != q.y || p.curve != q.curve) {
+			return false;
+		}
+	}
+	return true;
+}
+
 } // namespace
 
 LFOShape* LFOShapeEditor::shape() {
@@ -84,7 +98,6 @@ bool LFOShapeEditor::opened() {
 	uiTimerManager.unsetTimer(TimerName::SHORTCUT_BLINK);
 	zoomLevel_ = 0;
 	page_ = 0;
-	backPressed_ = false;
 	select(0);
 	startHistory();
 	focusRegained();
@@ -97,7 +110,7 @@ ActionResult LFOShapeEditor::exitUI() {
 }
 
 void LFOShapeEditor::closeEditor() {
-	releaseHistory();
+	endGesture(); // The history stays, see startHistory()
 	closeUI(this);
 }
 
@@ -108,7 +121,19 @@ static_assert(std::is_trivially_copyable_v<deluge::modulation::LFOShape>, "State
 static_assert(std::is_trivially_destructible_v<deluge::modulation::LFOShape>, "States get freed without destructors");
 
 void LFOShapeEditor::startHistory() {
+	endGesture();
+	LFOShape* s = shape();
+
+	// Back on the LFO the history belongs to, and nothing else changed its shape meanwhile (a preset load, another
+	// song...): carry on where it left off, so leaving the editor doesn't cost the undo steps
+	if (history_ != nullptr && historyCount_ > 0 && sound_ == historySound_ && lfoId_ == historyLfo_ && s != nullptr
+	    && sameShape(history_[historyCursor_].shape, *s)) {
+		select(history_[historyCursor_].selected);
+		return;
+	}
+
 	if (history_ == nullptr) {
+		// Kept from then on: a few KB, and the next LFO's history reuses it
 		void* memory = GeneralMemoryAllocator::get().allocLowSpeed(sizeof(State) * kHistorySize);
 		if (memory != nullptr) {
 			history_ = static_cast<State*>(memory);
@@ -119,21 +144,13 @@ void LFOShapeEditor::startHistory() {
 	}
 	historyCount_ = 0;
 	historyCursor_ = 0;
-	endGesture();
-	if (history_ != nullptr && shape() != nullptr) {
-		history_[0] = {*shape(), selected_};
+	historySound_ = sound_;
+	historyLfo_ = lfoId_;
+	if (history_ != nullptr && s != nullptr) {
+		history_[0] = {*s, selected_};
 		historyCount_ = 1;
 	}
 	// Without the memory the editor just works without undo
-}
-
-void LFOShapeEditor::releaseHistory() {
-	if (history_ != nullptr) {
-		delugeDealloc(history_);
-		history_ = nullptr;
-	}
-	historyCount_ = 0;
-	historyCursor_ = 0;
 }
 
 void LFOShapeEditor::beginEdit(Edit edit) {
@@ -168,26 +185,29 @@ void LFOShapeEditor::restore(const State& state) {
 	}
 }
 
-void LFOShapeEditor::undo() {
+void LFOShapeEditor::stepHistory(int32_t steps) {
 	endGesture();
-	if (history_ == nullptr || historyCursor_ <= 0) {
-		display->displayPopup("NO UNDO");
+	const bool backwards = steps < 0;
+	int32_t target = historyCursor_;
+	if (history_ != nullptr && historyCount_ > 0) {
+		target = std::clamp<int32_t>(historyCursor_ + steps, 0, historyCount_ - 1);
+	}
+	if (target == historyCursor_) {
+		display->displayPopup(backwards ? "NO UNDO" : "NO REDO");
 		return;
 	}
-	historyCursor_--;
+	historyCursor_ = target;
 	restore(history_[historyCursor_]);
-	display->displayPopup("UNDO");
-}
-
-void LFOShapeEditor::redo() {
-	endGesture();
-	if (history_ == nullptr || historyCursor_ >= historyCount_ - 1) {
-		display->displayPopup("NO REDO");
-		return;
+	if (display->haveOLED()) {
+		// Where in the history that leaves it: "UNDO 3/7" = step 3 of 7
+		char buffer[24];
+		snprintf(buffer, sizeof(buffer), "%s %d/%d", backwards ? "UNDO" : "REDO", static_cast<int>(historyCursor_),
+		         static_cast<int>(historyCount_ - 1));
+		display->displayPopup(buffer);
 	}
-	historyCursor_++;
-	restore(history_[historyCursor_]);
-	display->displayPopup("REDO");
+	else {
+		display->displayPopup(backwards ? "UNDO" : "REDO");
+	}
 }
 
 void LFOShapeEditor::focusRegained() {
@@ -477,34 +497,12 @@ ActionResult LFOShapeEditor::buttonAction(deluge::hid::Button b, bool on, bool i
 		return ActionResult::REMIND_ME_OUTSIDE_CARD_ROUTINE;
 	}
 
-	// Back undoes / redoes on its release: holding it closes the editor instead (the long-press timer calls exitUI())
-	if (b == BACK) {
-		if (on) {
-			backPressed_ = true;
-			return ActionResult::DEALT_WITH;
-		}
-		if (!backPressed_) {
-			return ActionResult::DEALT_WITH;
-		}
-		backPressed_ = false;
-		if (Buttons::isShiftButtonPressed()) {
-			redo();
-		}
-		else if (history_ != nullptr && historyCursor_ > 0) {
-			undo();
-		}
-		else {
-			closeEditor(); // Nothing (left) to undo: back out, like everywhere else
-			return ActionResult::DEALT_WITH;
-		}
-		changed();
-		return ActionResult::DEALT_WITH;
-	}
-
 	if (!on) {
 		return ActionResult::DEALT_WITH;
 	}
-	if (b == SELECT_ENC) {
+	// Back leaves, as in every menu - straight away, so holding it on leaves the sound editor as well (its long-press
+	// timer is already running). Undo / redo have the sidebar pads and shift + select.
+	if (b == BACK || b == SELECT_ENC) {
 		closeEditor();
 		return ActionResult::DEALT_WITH;
 	}
@@ -540,11 +538,15 @@ ActionResult LFOShapeEditor::padAction(int32_t x, int32_t y, int32_t velocity) {
 		return ActionResult::DEALT_WITH;
 	}
 
-	// Sidebar: the first column's pads jump to a page
+	// Sidebar: the first column's pads jump to a page, the second column has undo and redo
 	if (x >= kDisplayWidth) {
 		if (x == kDisplayWidth && y < numPages()) {
 			showPage(y);
 			popupPage();
+			changed();
+		}
+		else if (x == kDisplayWidth + 1 && (y == kUndoPadRow || y == kRedoPadRow)) {
+			stepHistory((y == kUndoPadRow) ? -1 : 1);
 			changed();
 		}
 		return ActionResult::DEALT_WITH;
@@ -623,8 +625,13 @@ ActionResult LFOShapeEditor::verticalEncoderAction(int32_t offset, bool inCardRo
 }
 
 void LFOShapeEditor::selectEncoderAction(int8_t offset) {
-	selectStep(offset);
-	popupPoint();
+	if (Buttons::isShiftButtonPressed()) {
+		stepHistory(offset); // Runs through the undo history, a step per detent
+	}
+	else {
+		selectStep(offset);
+		popupPoint();
+	}
 	changed();
 }
 
@@ -693,6 +700,11 @@ bool LFOShapeEditor::renderSidebar(uint32_t whichRows, RGB image[][kDisplayWidth
 		                              ? ((y == page_) ? colours::white : colours::blue.dim(2))
 		                              : colours::black;
 		image[y][kDisplayWidth + 1] = colours::black;
+	}
+	// Undo and redo: bright while there's a step to take (dark without the memory for a history)
+	if (history_ != nullptr) {
+		image[kUndoPadRow][kDisplayWidth + 1] = canUndo() ? colours::red : colours::red.dim(3);
+		image[kRedoPadRow][kDisplayWidth + 1] = canRedo() ? colours::green : colours::green.dim(3);
 	}
 	return true;
 }
