@@ -8,6 +8,7 @@ namespace deluge::dsp::filter {
 EnumStringMap<FilterMode, kNumFilterModes> filterMap({{{FilterMode::TRANSISTOR_12DB, "12dB"},
                                                        {FilterMode::TRANSISTOR_24DB, "24dB"},
                                                        {FilterMode::TRANSISTOR_24DB_DRIVE, "24dBDrive"},
+                                                       {FilterMode::VOWEL, "Vowel"},
                                                        {FilterMode::SVF_BAND, "SVF_Band"},
                                                        {FilterMode::SVF_NOTCH, "SVF_Notch"},
                                                        {FilterMode::HPLADDER, "HPLadder"}}});
@@ -29,6 +30,11 @@ FilterRoute stringToFilterRoute(char const* string) {
 }
 
 FilterMode stringToLPFType(char const* string) {
+	// "Club" (one-knob DJ filter of an earlier custom build) no longer exists. Load it as Off instead of letting the
+	// lookup fall back to HPLadder, which in the LPF slot shows "Off" in the menu while a ladder keeps running.
+	if (!strcmp(string, "Club")) {
+		return FilterMode::OFF;
+	}
 	return deluge::dsp::filter::filterMap(string);
 }
 char const* lpfTypeToString(FilterMode mode) {

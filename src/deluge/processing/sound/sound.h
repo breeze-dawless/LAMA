@@ -18,7 +18,9 @@
 #pragma once
 
 #include "definitions_cxx.hpp"
+#include "dsp/saturation.hpp"
 #include "model/mod_controllable/mod_controllable_audio.h"
+#include "model/sample/click_sample.h"
 #include "model/sample/sample_recorder.h"
 #include "model/voiced.h"
 #include "modulation/arpeggiator.h"
@@ -31,6 +33,7 @@
 #include "modulation/sidechain/sidechain.h"
 #include "processing/engines/audio_engine.h"
 #include "processing/source.h"
+#include "util/d_string.h"
 #include "util/misc.h"
 #include <bitset>
 #include <memory>
@@ -143,6 +146,33 @@ public:
 	SynthMode synthMode = SynthMode::SUBTRACTIVE;
 	bool modulator1ToModulator0 = false;
 
+	/// FM modulators run in FM mode, and in Kick mode (where they bend the oscillators' phase)
+	[[nodiscard]] bool usesModulators() const { return synthMode == SynthMode::FM || synthMode == SynthMode::KICK; }
+	/// Oscillators of every type (samples, wavetables...) - subtractive and Kick mode
+	[[nodiscard]] bool hasSubtractiveOscillators() const {
+		return synthMode == SynthMode::SUBTRACTIVE || synthMode == SynthMode::KICK;
+	}
+
+	/// Kick mode: time (steps, see dsp::kick_mode::pitchTimeMs()) and curve of the two pitch envelopes (envelopes 3
+	/// and 4; their amounts live in the envelopes' sustain params). Defaults: a fast click and a slower body.
+	uint8_t kickPitchTime[2] = {25, 58}; // ~4 ms, ~60 ms
+	int8_t kickPitchCurve[2] = {30, 10};
+
+	/// Oscillators that were saved as the old Kick oscillator type, plus the settings of theirs that carry over to the
+	/// Kick synth mode - only used while loading, see convertLegacyKickOscillators()
+	uint8_t legacyKickSources{0};
+	uint8_t legacyKickClickTime{45};
+	int8_t legacyKickClickCurve{30};
+	int8_t legacyKickBodyCurve{10};
+	void convertLegacyKickOscillators(ParamManager* paramManager);
+
+	/// Kick mode: a sample the noise oscillator plays in place of noise (the click layer), and its file
+	ClickSample clickSample;
+	String clickSamplePath;
+	/// Loads a WAV as the click sample - keeps the current one if that fails
+	Error setClickSample(char const* path);
+	void clearClickSample();
+
 	int32_t volumeNeutralValueForUnison{0};
 
 	int32_t lastNoteCode = std::numeric_limits<int32_t>::min();
@@ -253,7 +283,7 @@ public:
 	bool envelopeHasSustainEver(int32_t e, ParamManagerForTimeline* paramManager);
 	bool renderingOscillatorSyncCurrently(ParamManagerForTimeline* paramManager);
 	bool renderingOscillatorSyncEver(ParamManager* paramManager);
-	void setupAsBlankSynth(ParamManager* paramManager, bool is_dx = false);
+	void setupAsBlankSynth(ParamManager* paramManager);
 	void setupAsDefaultSynth(ParamManager* paramManager);
 	void modButtonAction(uint8_t whichModButton, bool on, ParamManagerForTimeline* paramManager) final;
 	bool modEncoderButtonAction(uint8_t whichModEncoder, bool on, ModelStackWithThreeMainThings* modelStack) final;
@@ -300,14 +330,26 @@ public:
 	virtual ArpeggiatorBase* getArp() = 0;
 	void possiblySetupDefaultExpressionPatching(ParamManager* paramManager);
 
-	int32_t getShiftAmountForSaturation() const { return (clippingAmount >= 2) ? (clippingAmount - 2) : 0; }
+	int32_t getShiftAmountForSaturation() const {
+		uint8_t legacyDrive = deluge::dsp::tanhLegacyDriveSteps(clippingAmount);
+		return (legacyDrive >= 2) ? (legacyDrive - 2) : 0;
+	}
 
 	///	clipping amount must be greater than 0! Check before calling
 	/// Shift amount is givben by getShiftAmountForSaturation
-	[[gnu::always_inline]] void saturate(int32_t* data, uint32_t* workingValue, int32_t shiftAmount) {
+	[[gnu::always_inline]] void saturate(int32_t* data, uint32_t* workingValue, int32_t shiftAmount,
+	                                     int32_t* toneState) {
 		// Clipping
-		//*data = getTanHUnknown(*data, 5 + clippingAmount) << (shiftAmount);
-		*data = getTanHAntialiased(*data, workingValue, 5 + clippingAmount) << (shiftAmount);
+		int32_t dry = *data;
+		// Tone splits the DRY signal into a clean low end (bypasses saturation entirely) and a high
+		// end (the only part that actually gets distorted), then sums them back together - "clean
+		// lows, dirty highs" rather than filtering the low end out of the already-distorted signal.
+		int32_t low = deluge::dsp::saturationCleanLowEnd(dry, toneState, clippingTone);
+		int32_t high = subtract_saturate(dry, low);
+		int32_t distortedHigh = deluge::dsp::saturateTanh(high, workingValue, clippingAmount, clippingTweak)
+		                        << (shiftAmount);
+		int32_t wet = add_saturate(low, distortedHigh);
+		*data = deluge::dsp::blendSaturationMix(dry, wet, clippingMix);
 	}
 	uint32_t getSyncedLFOPhaseIncrement(const LFOConfig& config);
 

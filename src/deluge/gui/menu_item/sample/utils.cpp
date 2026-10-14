@@ -10,7 +10,7 @@ bool isSampleModeSample(ModControllableAudio* modControllable, int32_t whichThin
 	const auto sound = static_cast<Sound*>(modControllable);
 	Source& source = sound->sources[whichThing];
 
-	return sound->getSynthMode() == ::SynthMode::SUBTRACTIVE && source.oscType == OscType::SAMPLE
+	return sound->hasSubtractiveOscillators() && source.oscType == OscType::SAMPLE
 	       && source.hasAtLeastOneAudioFileLoaded();
 }
 

@@ -17,7 +17,7 @@
 
 #include "processing/sound/sound.h"
 #include "definitions_cxx.hpp"
-#include "dsp/dx/engine.h"
+#include "dsp/kick_mode.hpp"
 #include "gui/l10n/l10n.h"
 #include "gui/ui/root_ui.h"
 #include "gui/ui/sound_editor.h"
@@ -139,6 +139,12 @@ void Sound::cloneFrom(ModControllableAudio* other) {
 	synthMode = src->synthMode;
 	oscillatorSync = src->oscillatorSync;
 	modulator1ToModulator0 = src->modulator1ToModulator0;
+	for (int32_t k = 0; k < 2; k++) {
+		kickPitchTime[k] = src->kickPitchTime[k];
+		kickPitchCurve[k] = src->kickPitchCurve[k];
+	}
+	clickSamplePath.set(&src->clickSamplePath);
+	clickSample.copyFrom(src->clickSample); // Out of memory leaves it to loadAllAudioFiles()
 
 	polyphonic = src->polyphonic;
 	maxVoiceCount = src->maxVoiceCount;
@@ -197,6 +203,7 @@ void Sound::initParams(ParamManager* paramManager) {
 	patchedParams->params[params::GLOBAL_HARM_LEVEL].setCurrentValueBasicForSetup(-2147483648); // min = silence
 	patchedParams->params[params::GLOBAL_VOLUME_POST_REVERB_SEND].setCurrentValueBasicForSetup(0);
 	patchedParams->params[params::LOCAL_FOLD].setCurrentValueBasicForSetup(-2147483648);
+	patchedParams->params[params::LOCAL_FOLD_SYMMETRY].setCurrentValueBasicForSetup(0); // centre = symmetric
 	patchedParams->params[params::LOCAL_HPF_RESONANCE].setCurrentValueBasicForSetup(-2147483648);
 	patchedParams->params[params::LOCAL_HPF_FREQ].setCurrentValueBasicForSetup(-2147483648);
 	patchedParams->params[params::LOCAL_HPF_MORPH].setCurrentValueBasicForSetup(-2147483648);
@@ -360,7 +367,7 @@ void Sound::setupDefaultExpressionPatching(ParamManager* paramManager) {
 	}
 }
 
-void Sound::setupAsBlankSynth(ParamManager* paramManager, bool is_dx) {
+void Sound::setupAsBlankSynth(ParamManager* paramManager) {
 
 	PatchedParamSet* patchedParams = paramManager->getPatchedParamSet();
 	patchedParams->params[params::LOCAL_OSC_B_VOLUME].setCurrentValueBasicForSetup(-2147483648);
@@ -370,20 +377,11 @@ void Sound::setupAsBlankSynth(ParamManager* paramManager, bool is_dx) {
 	patchedParams->params[params::LOCAL_ENV_0_DECAY].setCurrentValueBasicForSetup(
 	    getParamFromUserValue(params::LOCAL_ENV_0_DECAY, 20));
 	patchedParams->params[params::LOCAL_ENV_0_SUSTAIN].setCurrentValueBasicForSetup(2147483647);
-	if (is_dx) {
-		sources[0].oscType = OscType::DX7;
-		sources[0].ensureDxPatch(); // initializes DX engine if this is the first dx7patch
-		// velocity is forwarded to dx7 engine, don't do master volume
-		paramManager->getPatchCableSet()->numPatchCables = 0;
-		patchedParams->params[params::LOCAL_ENV_0_RELEASE].setCurrentValueBasicForSetup(2147483647); // 30 ish
-	}
-	else {
-		patchedParams->params[params::LOCAL_ENV_0_RELEASE].setCurrentValueBasicForSetup(-2147483648);
+	patchedParams->params[params::LOCAL_ENV_0_RELEASE].setCurrentValueBasicForSetup(-2147483648);
 
-		paramManager->getPatchCableSet()->numPatchCables = 1;
-		paramManager->getPatchCableSet()->patchCables[0].setup(PatchSource::VELOCITY, params::LOCAL_VOLUME,
-		                                                       getParamFromUserValue(params::PATCH_CABLE, 50));
-	}
+	paramManager->getPatchCableSet()->numPatchCables = 1;
+	paramManager->getPatchCableSet()->patchCables[0].setup(PatchSource::VELOCITY, params::LOCAL_VOLUME,
+	                                                       getParamFromUserValue(params::PATCH_CABLE, 50));
 
 	setupDefaultExpressionPatching(paramManager);
 
@@ -471,6 +469,50 @@ void Sound::recalculatePatchingToParam(uint8_t p, ParamManagerForTimeline* param
 	ParamCollectionSummary* patchedParamsSummary = paramManager->getPatchedParamSetSummary();                          \
 	PatchedParamSet* patchedParams = (PatchedParamSet*)patchedParamsSummary->paramCollection;
 
+/// Reads the LFO attributes this firmware adds (8-bar sync, custom shape). Returns false if tagName isn't one of them.
+static bool readLFOExtraFromFile(Deserializer& reader, char const* tagName, LFOConfig& config) {
+	if (!strcmp(tagName, "syncDoubled")) {
+		config.syncDoubled = (reader.readTagOrAttributeValueInt() != 0);
+		reader.exitTag("syncDoubled");
+		return true;
+	}
+	// The shape comes in chunks (see LFOShape::toHex()). A damaged one leaves the default shape.
+	// exitTag() gets the literal, not tagName - the reader may reuse tagName's buffer while reading the value
+	if (!strcmp(tagName, "shape")) {
+		if (config.ensureShape()) {
+			config.shape->fromHex(reader.readTagOrAttributeValue());
+		}
+		reader.exitTag("shape");
+		return true;
+	}
+	if (!strcmp(tagName, "shapeB") || !strcmp(tagName, "shapeC")) {
+		const bool chunkB = (tagName[5] == 'B');
+		if (config.shape != nullptr) {
+			config.shape->appendHex(reader.readTagOrAttributeValue());
+		}
+		reader.exitTag(chunkB ? "shapeB" : "shapeC");
+		return true;
+	}
+	return false;
+}
+
+static void writeLFOExtraToFile(Serializer& writer, const LFOConfig& config) {
+	using deluge::modulation::LFOShape;
+	if (config.syncDoubled) {
+		writer.writeAttribute("syncDoubled", 1, false);
+	}
+	if (config.waveType == LFOType::CUSTOM && config.shape != nullptr) {
+		// In chunks: the file reader cuts values off at 255 characters
+		static constexpr const char* kChunkNames[] = {"shape", "shapeB", "shapeC"};
+		static_assert(LFOShape::kMaxPoints <= 3 * LFOShape::kHexChunkPoints);
+		char hex[LFOShape::kHexBufferSize];
+		for (int32_t chunk = 0; chunk < 3 && chunk * LFOShape::kHexChunkPoints < config.shape->numPoints(); chunk++) {
+			config.shape->toHex(hex, chunk * LFOShape::kHexChunkPoints);
+			writer.writeAttribute(kChunkNames[chunk], hex, false);
+		}
+	}
+}
+
 // paramManager only required for old old song files, or for presets (because you'd be wanting to extract the
 // defaultParams into it). arpSettings optional - no need if you're loading a new V2.0 song where Instruments are all
 // separate from Clips and won't store any arp stuff.
@@ -497,12 +539,29 @@ Error Sound::readTagFromFileOrError(Deserializer& reader, char const* tagName, P
 
 	else if (!strcmp(tagName, "mode")) {
 		char const* contents = reader.readTagOrAttributeValue();
-		if (synthMode != SynthMode::RINGMOD) { // Compatibility with old XML files
-			synthMode = stringToSynthMode(contents);
-		}
+		synthMode = stringToSynthMode(contents);
 		// Uart::print("synth mode set to: ");
 		// Uart::println(synthMode);
 		reader.exitTag("mode");
+	}
+
+	else if (!strcmp(tagName, "clickSample")) {
+		clickSamplePath.set(reader.readTagOrAttributeValue());
+		reader.exitTag("clickSample");
+	}
+
+	// Kick mode pitch envelopes (clamped to their menu ranges)
+	else if (!strcmp(tagName, "kickPitchTime1") || !strcmp(tagName, "kickPitchTime2")) {
+		const int32_t k = (tagName[13] == '2') ? 1 : 0;
+		kickPitchTime[k] =
+		    std::clamp<int32_t>(reader.readTagOrAttributeValueInt(), 0, deluge::dsp::kick_mode::kTimeSteps);
+		reader.exitTag(k == 0 ? "kickPitchTime1" : "kickPitchTime2");
+	}
+	else if (!strcmp(tagName, "kickPitchCurve1") || !strcmp(tagName, "kickPitchCurve2")) {
+		const int32_t k = (tagName[14] == '2') ? 1 : 0;
+		kickPitchCurve[k] = std::clamp<int32_t>(reader.readTagOrAttributeValueInt(), -deluge::dsp::kick_mode::kCurveMax,
+		                                        deluge::dsp::kick_mode::kCurveMax);
+		reader.exitTag(k == 0 ? "kickPitchCurve1" : "kickPitchCurve2");
 	}
 
 	// Backwards-compatible reading of old-style oscs, from pre-mid-2016 files
@@ -814,14 +873,6 @@ Error Sound::readTagFromFileOrError(Deserializer& reader, char const* tagName, P
 		reader.exitTag("zone", true);
 	}
 
-	else if (!strcmp(tagName, "ringMod")) {
-		int32_t contents = reader.readTagOrAttributeValueInt();
-		if (contents == 1) {
-			synthMode = SynthMode::RINGMOD;
-		}
-		reader.exitTag("ringMod");
-	}
-
 	else if (!strcmp(tagName, "modKnobs")) {
 
 		int32_t k = 0;
@@ -969,6 +1020,7 @@ Error Sound::readTagFromFileOrError(Deserializer& reader, char const* tagName, P
 		// Set default values in case they are not configured.
 		lfoConfig[LFO1_ID].syncLevel = SYNC_LEVEL_NONE;
 		lfoConfig[LFO1_ID].syncType = SYNC_TYPE_EVEN;
+		lfoConfig[LFO1_ID].syncDoubled = false;
 		reader.match('{');
 		while (*(tagName = reader.readNextTagOrAttributeName())) {
 			if (!strcmp(tagName, "type")) {
@@ -990,11 +1042,17 @@ Error Sound::readTagFromFileOrError(Deserializer& reader, char const* tagName, P
 				    (SyncLevel)song->convertSyncLevelFromFileValueToInternalValue(reader.readTagOrAttributeValueInt());
 				reader.exitTag("syncLevel");
 			}
+			else if (readLFOExtraFromFile(reader, tagName, lfoConfig[LFO1_ID])) {
+				// 8-bar sync or custom shape - read in full
+			}
 			else {
 				reader.exitTag(tagName);
 			}
 		}
 		reader.exitTag("lfo1", true);
+		if (lfoConfig[LFO1_ID].waveType == LFOType::CUSTOM) {
+			lfoConfig[LFO1_ID].ensureShape();
+		}
 		resyncGlobalLFOs();
 	}
 
@@ -1002,6 +1060,7 @@ Error Sound::readTagFromFileOrError(Deserializer& reader, char const* tagName, P
 		// Set default values in case they are not configured.
 		lfoConfig[LFO2_ID].syncLevel = SYNC_LEVEL_NONE;
 		lfoConfig[LFO2_ID].syncType = SYNC_TYPE_EVEN;
+		lfoConfig[LFO2_ID].syncDoubled = false;
 		reader.match('{');
 		while (*(tagName = reader.readNextTagOrAttributeName())) {
 			if (!strcmp(tagName, "type")) {
@@ -1023,11 +1082,17 @@ Error Sound::readTagFromFileOrError(Deserializer& reader, char const* tagName, P
 				    (SyncLevel)song->convertSyncLevelFromFileValueToInternalValue(reader.readTagOrAttributeValueInt());
 				reader.exitTag("syncLevel");
 			}
+			else if (readLFOExtraFromFile(reader, tagName, lfoConfig[LFO2_ID])) {
+				// 8-bar sync or custom shape - read in full
+			}
 			else {
 				reader.exitTag(tagName);
 			}
 		}
 		reader.exitTag("lfo2", true);
+		if (lfoConfig[LFO2_ID].waveType == LFOType::CUSTOM) {
+			lfoConfig[LFO2_ID].ensureShape();
+		}
 		// No resync for LFO2
 	}
 
@@ -1035,6 +1100,7 @@ Error Sound::readTagFromFileOrError(Deserializer& reader, char const* tagName, P
 		// Set default values in case they are not configured.
 		lfoConfig[LFO3_ID].syncLevel = SYNC_LEVEL_NONE;
 		lfoConfig[LFO3_ID].syncType = SYNC_TYPE_EVEN;
+		lfoConfig[LFO3_ID].syncDoubled = false;
 		reader.match('{');
 		while (*(tagName = reader.readNextTagOrAttributeName())) {
 			if (!strcmp(tagName, "type")) {
@@ -1056,11 +1122,17 @@ Error Sound::readTagFromFileOrError(Deserializer& reader, char const* tagName, P
 				    (SyncLevel)song->convertSyncLevelFromFileValueToInternalValue(reader.readTagOrAttributeValueInt());
 				reader.exitTag("syncLevel");
 			}
+			else if (readLFOExtraFromFile(reader, tagName, lfoConfig[LFO3_ID])) {
+				// 8-bar sync or custom shape - read in full
+			}
 			else {
 				reader.exitTag(tagName);
 			}
 		}
 		reader.exitTag("lfo3", true);
+		if (lfoConfig[LFO3_ID].waveType == LFOType::CUSTOM) {
+			lfoConfig[LFO3_ID].ensureShape();
+		}
 		resyncGlobalLFOs();
 	}
 
@@ -1068,6 +1140,7 @@ Error Sound::readTagFromFileOrError(Deserializer& reader, char const* tagName, P
 		// Set default values in case they are not configured.
 		lfoConfig[LFO4_ID].syncLevel = SYNC_LEVEL_NONE;
 		lfoConfig[LFO4_ID].syncType = SYNC_TYPE_EVEN;
+		lfoConfig[LFO4_ID].syncDoubled = false;
 		reader.match('{');
 		while (*(tagName = reader.readNextTagOrAttributeName())) {
 			if (!strcmp(tagName, "type")) {
@@ -1089,11 +1162,17 @@ Error Sound::readTagFromFileOrError(Deserializer& reader, char const* tagName, P
 				    (SyncLevel)song->convertSyncLevelFromFileValueToInternalValue(reader.readTagOrAttributeValueInt());
 				reader.exitTag("syncLevel");
 			}
+			else if (readLFOExtraFromFile(reader, tagName, lfoConfig[LFO4_ID])) {
+				// 8-bar sync or custom shape - read in full
+			}
 			else {
 				reader.exitTag(tagName);
 			}
 		}
 		reader.exitTag("lfo4", true);
+		if (lfoConfig[LFO4_ID].waveType == LFOType::CUSTOM) {
+			lfoConfig[LFO4_ID].ensureShape();
+		}
 		// No resync for LFO4
 	}
 
@@ -1480,9 +1559,6 @@ PatchCableAcceptance Sound::maySourcePatchToParam(PatchSource s, uint8_t p, Para
 		// OscType::JUNO60_SUBOSC)) return PatchCableAcceptance::DISALLOWED;
 		break;
 	case params::LOCAL_OSC_A_VOLUME:
-		if (getSynthMode() == SynthMode::RINGMOD) {
-			return PatchCableAcceptance::DISALLOWED;
-		}
 	case params::LOCAL_OSC_A_PITCH_ADJUST:
 		return (isSourceActiveEverDisregardingMissingSample(0, paramManager)) ? PatchCableAcceptance::ALLOWED
 		                                                                      : PatchCableAcceptance::EDITABLE;
@@ -1504,9 +1580,6 @@ PatchCableAcceptance Sound::maySourcePatchToParam(PatchSource s, uint8_t p, Para
 		// OscType::JUNO60_SUBOSC)) return PatchCableAcceptance::DISALLOWED;
 		break;
 	case params::LOCAL_OSC_B_VOLUME:
-		if (getSynthMode() == SynthMode::RINGMOD) {
-			return PatchCableAcceptance::DISALLOWED;
-		}
 	case params::LOCAL_OSC_B_PITCH_ADJUST:
 		return (isSourceActiveEverDisregardingMissingSample(1, paramManager)) ? PatchCableAcceptance::ALLOWED
 		                                                                      : PatchCableAcceptance::EDITABLE;
@@ -1550,7 +1623,7 @@ PatchCableAcceptance Sound::maySourcePatchToParam(PatchSource s, uint8_t p, Para
 
 	case params::LOCAL_MODULATOR_0_VOLUME:
 	case params::LOCAL_MODULATOR_0_PITCH_ADJUST:
-		if (synthMode != SynthMode::FM) {
+		if (!usesModulators()) {
 			return PatchCableAcceptance::DISALLOWED;
 		}
 		return (patchedParams->params[params::LOCAL_MODULATOR_0_VOLUME].containsSomething(-2147483648))
@@ -1558,7 +1631,7 @@ PatchCableAcceptance Sound::maySourcePatchToParam(PatchSource s, uint8_t p, Para
 		           : PatchCableAcceptance::EDITABLE;
 
 	case params::LOCAL_MODULATOR_0_FEEDBACK:
-		if (synthMode != SynthMode::FM) {
+		if (!usesModulators()) {
 			return PatchCableAcceptance::DISALLOWED;
 		}
 		return (patchedParams->params[params::LOCAL_MODULATOR_0_VOLUME].containsSomething(-2147483648)
@@ -1568,7 +1641,7 @@ PatchCableAcceptance Sound::maySourcePatchToParam(PatchSource s, uint8_t p, Para
 
 	case params::LOCAL_MODULATOR_1_VOLUME:
 	case params::LOCAL_MODULATOR_1_PITCH_ADJUST:
-		if (synthMode != SynthMode::FM) {
+		if (!usesModulators()) {
 			return PatchCableAcceptance::DISALLOWED;
 		}
 		return (patchedParams->params[params::LOCAL_MODULATOR_1_VOLUME].containsSomething(-2147483648))
@@ -1576,7 +1649,7 @@ PatchCableAcceptance Sound::maySourcePatchToParam(PatchSource s, uint8_t p, Para
 		           : PatchCableAcceptance::EDITABLE;
 
 	case params::LOCAL_MODULATOR_1_FEEDBACK:
-		if (synthMode != SynthMode::FM) {
+		if (!usesModulators()) {
 			return PatchCableAcceptance::DISALLOWED;
 		}
 		return (patchedParams->params[params::LOCAL_MODULATOR_1_VOLUME].containsSomething(-2147483648)
@@ -1624,8 +1697,7 @@ void Sound::noteOn(ModelStackWithThreeMainThings* modelStack, ArpeggiatorBase* a
 
 	ModelStackWithSoundFlags* modelStackWithSoundFlags = modelStack->addSoundFlags();
 
-	if (!((synthMode == SynthMode::RINGMOD) || (modelStackWithSoundFlags->checkSourceEverActive(0))
-	      || (modelStackWithSoundFlags->checkSourceEverActive(1))
+	if (!((modelStackWithSoundFlags->checkSourceEverActive(0)) || (modelStackWithSoundFlags->checkSourceEverActive(1))
 	      || (paramManager->getPatchedParamSet()->params[params::LOCAL_NOISE_VOLUME].containsSomething(-2147483648))))
 	    [[unlikely]] {
 		return;
@@ -2071,7 +2143,7 @@ bool Sound::allowNoteTails(ModelStackWithSoundFlags* modelStack, bool disregardS
 	}
 
 	// After that if not subtractive (so no samples) or there's some noise, we definitely can have tails
-	if (synthMode != SynthMode::SUBTRACTIVE
+	if (!hasSubtractiveOscillators()
 	    || modelStack->paramManager->getPatchedParamSet()->params[params::LOCAL_NOISE_VOLUME].containsSomething(
 	        -2147483648)) {
 		return true;
@@ -2230,15 +2302,13 @@ bool Sound::allowsVeryLateNoteStart(InstrumentClip* clip, ParamManagerForTimelin
 }
 
 bool Sound::isSourceActiveCurrently(int32_t s, ParamManagerForTimeline* paramManager) {
-	return (synthMode == SynthMode::RINGMOD
-	        || getSmoothedPatchedParamValue(params::LOCAL_OSC_A_VOLUME + s, *paramManager) != -2147483648)
+	return (getSmoothedPatchedParamValue(params::LOCAL_OSC_A_VOLUME + s, *paramManager) != -2147483648)
 	       && (synthMode == SynthMode::FM || sources[s].oscType != OscType::SAMPLE
 	           || sources[s].hasAtLeastOneAudioFileLoaded());
 }
 
 bool Sound::isSourceActiveEverDisregardingMissingSample(int32_t s, ParamManager* paramManager) {
-	return (synthMode == SynthMode::RINGMOD
-	        || paramManager->getPatchedParamSet()->params[params::LOCAL_OSC_A_VOLUME + s].containsSomething(-2147483648)
+	return (paramManager->getPatchedParamSet()->params[params::LOCAL_OSC_A_VOLUME + s].containsSomething(-2147483648)
 	        || renderingOscillatorSyncEver(paramManager));
 }
 
@@ -2257,22 +2327,20 @@ bool Sound::renderingOscillatorSyncCurrently(ParamManagerForTimeline* paramManag
 	if (!oscillatorSync) {
 		return false;
 	}
-	if (synthMode == SynthMode::FM) {
+	if (synthMode == SynthMode::FM || synthMode == SynthMode::KICK) {
 		return false;
 	}
-	return (getSmoothedPatchedParamValue(params::LOCAL_OSC_B_VOLUME, *paramManager) != -2147483648
-	        || synthMode == SynthMode::RINGMOD);
+	return getSmoothedPatchedParamValue(params::LOCAL_OSC_B_VOLUME, *paramManager) != -2147483648;
 }
 
 bool Sound::renderingOscillatorSyncEver(ParamManager* paramManager) {
 	if (!oscillatorSync) {
 		return false;
 	}
-	if (synthMode == SynthMode::FM) {
+	if (synthMode == SynthMode::FM || synthMode == SynthMode::KICK) {
 		return false;
 	}
-	return (paramManager->getPatchedParamSet()->params[params::LOCAL_OSC_B_VOLUME].containsSomething(-2147483648)
-	        || synthMode == SynthMode::RINGMOD);
+	return paramManager->getPatchedParamSet()->params[params::LOCAL_OSC_B_VOLUME].containsSomething(-2147483648);
 }
 
 void Sound::sampleZoneChanged(MarkerType markerType, int32_t s, ModelStackWithSoundFlags* modelStack) {
@@ -2544,12 +2612,6 @@ void Sound::render(ModelStackWithThreeMainThings* modelStack, std::span<StereoSa
 		sourcesChanged |= anyChange << patchSourceLFOGlobalUnderlying;
 	}
 
-	for (int s = 0; s < kNumSources; s++) {
-		if (sources[s].oscType == OscType::DX7 and sources[s].dxPatch) {
-			sources[s].dxPatch->computeLfo(output.size());
-		}
-	}
-
 	// Do sidechain
 	if (paramManager->getPatchCableSet()->isSourcePatchedToSomething(PatchSource::SIDECHAIN)) {
 		if (sideChainHitPending) {
@@ -2666,6 +2728,7 @@ void Sound::render(ModelStackWithThreeMainThings* modelStack, std::span<StereoSa
 		q31_t hpfFreq = getSmoothedPatchedParamValue(params::LOCAL_HPF_FREQ, *paramManager);
 		bool doLPF = thisHasFilters
 		             && (lpfMode == FilterMode::TRANSISTOR_24DB_DRIVE
+		                 || lpfMode == FilterMode::VOWEL // A wide-open cutoff is the vowel U, not "filter off"
 		                 || paramManager->getPatchCableSet()->doesParamHaveSomethingPatchedToIt(params::LOCAL_LPF_FREQ)
 		                 || (lpfFreq < 0x7FFFFFD2) || (lpfMorph > std::numeric_limits<q31_t>::min()));
 		bool doHPF =
@@ -2896,9 +2959,6 @@ void Sound::render(ModelStackWithThreeMainThings* modelStack, std::span<StereoSa
 
 	sourcesChanged = 0;
 	expressionSourcesChangedAtSynthLevel.reset();
-	for (int i = 0; i < kNumSources; i++) {
-		sources[i].dxPatchChanged = false;
-	}
 
 	// Unlike all the other possible reasons we might want to start skipping rendering, delay.repeatsUntilAbandon may
 	// have changed state just now.
@@ -2998,6 +3058,9 @@ uint32_t Sound::getGlobalLFOPhaseIncrement(LFO_ID lfoId, deluge::modulation::par
 uint32_t Sound::getSyncedLFOPhaseIncrement(const LFOConfig& config) {
 	uint32_t phaseIncrement =
 	    (playbackHandler.getTimePerInternalTickInverse()) >> (SYNC_LEVEL_256TH - config.syncLevel);
+	if (config.syncDoubled) {
+		phaseIncrement >>= 1; // 8 bars: half the speed of the longest regular level
+	}
 	switch (config.syncType) {
 	case SYNC_TYPE_EVEN:
 		// Nothing to do
@@ -3031,18 +3094,7 @@ void Sound::resyncGlobalLFOs() {
 
 		// If we're right at the first tick, no need to do anything else!
 		if (lastInternalTickDone || timeSinceLastTick) {
-			uint32_t numInternalTicksPerPeriod = 3 << (SYNC_LEVEL_256TH - lfoConfig[LFO1_ID].syncLevel);
-			switch (lfoConfig[LFO1_ID].syncType) {
-			case SYNC_TYPE_EVEN:
-				// Nothing to do
-				break;
-			case SYNC_TYPE_TRIPLET:
-				numInternalTicksPerPeriod = numInternalTicksPerPeriod * 2 / 3;
-				break;
-			case SYNC_TYPE_DOTTED:
-				numInternalTicksPerPeriod = numInternalTicksPerPeriod * 3 / 2;
-				break;
-			}
+			uint32_t numInternalTicksPerPeriod = lfoConfig[LFO1_ID].syncedTicksPerPeriod();
 			uint32_t offsetTicks = (uint64_t)lastInternalTickDone % (uint16_t)numInternalTicksPerPeriod;
 
 			// If we're right at a bar (or something), no need to do anyting else
@@ -3068,18 +3120,7 @@ void Sound::resyncGlobalLFOs() {
 
 		// If we're right at the first tick, no need to do anything else!
 		if (lastInternalTickDone || timeSinceLastTick) {
-			uint32_t numInternalTicksPerPeriod = 3 << (SYNC_LEVEL_256TH - lfoConfig[LFO3_ID].syncLevel);
-			switch (lfoConfig[LFO3_ID].syncType) {
-			case SYNC_TYPE_EVEN:
-				// Nothing to do
-				break;
-			case SYNC_TYPE_TRIPLET:
-				numInternalTicksPerPeriod = numInternalTicksPerPeriod * 2 / 3;
-				break;
-			case SYNC_TYPE_DOTTED:
-				numInternalTicksPerPeriod = numInternalTicksPerPeriod * 3 / 2;
-				break;
-			}
+			uint32_t numInternalTicksPerPeriod = lfoConfig[LFO3_ID].syncedTicksPerPeriod();
 			uint32_t offsetTicks = (uint64_t)lastInternalTickDone % (uint16_t)numInternalTicksPerPeriod;
 
 			// If we're right at a bar (or something), no need to do anyting else
@@ -3734,7 +3775,7 @@ void Sound::setNumUnison(int32_t newNum, ModelStackWithSoundFlags* modelStack) {
 
 	// Effective volume has changed. Need to pass that change onto Voices
 	for (const ActiveVoice& voice : voices_) {
-		if (synthMode == SynthMode::SUBTRACTIVE) {
+		if (hasSubtractiveOscillators()) {
 			for (int32_t s = 0; s < kNumSources; s++) {
 				bool sourceEverActive = modelStack->checkSourceEverActive(s);
 
@@ -3863,6 +3904,10 @@ Error Sound::readFromFile(Deserializer& reader, ModelStackWithModControllable* m
 	modulatorTranspose[1] = 0;
 	oscRetriggerPhase.fill(0);
 	modulatorRetriggerPhase.fill(0);
+	legacyKickSources = 0;
+	legacyKickClickTime = 45;
+	legacyKickClickCurve = 30;
+	legacyKickBodyCurve = 10;
 
 	char const* tagName;
 
@@ -3879,6 +3924,11 @@ Error Sound::readFromFile(Deserializer& reader, ModelStackWithModControllable* m
 			reader.exitTag(tagName);
 		}
 	}
+
+	if (paramManager.containsAnyMainParamCollections()) {
+		convertLegacyKickOscillators(&paramManager);
+	}
+	legacyKickSources = 0;
 
 	// old FM patches can have a filter mode saved in them even though it wouldn't have rendered at the time
 	if (synthMode == SynthMode::FM && song_firmware_version < FirmwareVersion::community({1, 2, 0})) {
@@ -3907,6 +3957,75 @@ Error Sound::readFromFile(Deserializer& reader, ModelStackWithModControllable* m
 	}
 
 	return Error::NONE;
+}
+
+/// Sounds saved with the old Kick oscillator type load in the Kick synth mode: that oscillator becomes a sine two
+/// octaves down (where the Kick oscillator sat), its click and body pitch sweeps become pitch envelopes 3 and 4, and
+/// the patched params it had borrowed go back to their defaults - otherwise they'd now act as FM or pulse width.
+void Sound::convertLegacyKickOscillators(ParamManager* paramManager) {
+	const uint8_t kickSources = legacyKickSources;
+	legacyKickSources = 0;
+	if (kickSources == 0 || synthMode != SynthMode::SUBTRACTIVE) {
+		return; // FM never played the Kick oscillator
+	}
+	namespace km = deluge::dsp::kick_mode;
+	PatchedParamSet& patched = *paramManager->getPatchedParamSet();
+	auto preset = [&](int32_t p) { return patched.params[p].getCurrentValue(); };
+
+	// The old Kick's mappings: click amount 0..60 semitones (a hybrid param), body amount 0..48 semitones, click time
+	// 0.5..50 ms, body time 5..1000 ms
+	const int32_t s = (kickSources & 1) ? 0 : 1;
+	const int64_t clickSteps =
+	    (static_cast<int64_t>(preset(params::LOCAL_OSC_A_PHASE_WIDTH + s)) * 60 + (int64_t{1} << 30)) >> 31;
+	const int32_t clickSemitones = std::clamp<int32_t>(static_cast<int32_t>(clickSteps), 0, 60);
+	const int32_t bodySemitones = km::stepsFromBipolarPreset(preset(params::LOCAL_MODULATOR_0_PITCH_ADJUST + s), 48);
+	const float clickMs = 0.5f * std::pow(100.0f, static_cast<float>(legacyKickClickTime) / 100.0f);
+	const float bodyMs =
+	    5.0f
+	    * std::pow(200.0f,
+	               static_cast<float>(km::stepsFromBipolarPreset(preset(params::LOCAL_MODULATOR_0_FEEDBACK + s), 100))
+	                   / 100.0f);
+	auto timeSteps = [](float ms) { // The inverse of km::pitchTimeMs()
+		return static_cast<uint8_t>(std::clamp<int32_t>(
+		    static_cast<int32_t>(std::lround(km::kTimeSteps * std::log(ms / 0.5f) / std::log(4000.0f))), 0,
+		    km::kTimeSteps));
+	};
+
+	synthMode = SynthMode::KICK;
+	patched.params[params::LOCAL_ENV_2_SUSTAIN].setCurrentValueBasicForSetup(
+	    km::bipolarPresetFromSteps(clickSemitones, km::kAmountMax));
+	patched.params[params::LOCAL_ENV_3_SUSTAIN].setCurrentValueBasicForSetup(
+	    km::bipolarPresetFromSteps(bodySemitones, km::kAmountMax));
+	kickPitchTime[0] = timeSteps(clickMs);
+	kickPitchCurve[0] = legacyKickClickCurve;
+	kickPitchTime[1] = timeSteps(bodyMs);
+	kickPitchCurve[1] = legacyKickBodyCurve;
+
+	// The old Kick shaped its own volume and ignored the note length: envelope 1 does that now
+	patched.params[params::LOCAL_ENV_0_ATTACK].setCurrentValueBasicForSetup(
+	    getParamFromUserValue(params::LOCAL_ENV_0_ATTACK, 0));
+	patched.params[params::LOCAL_ENV_0_DECAY].setCurrentValueBasicForSetup(
+	    getParamFromUserValue(params::LOCAL_ENV_0_DECAY, 28));
+	patched.params[params::LOCAL_ENV_0_SUSTAIN].setCurrentValueBasicForSetup(
+	    getParamFromUserValue(params::LOCAL_ENV_0_SUSTAIN, 0));
+	patched.params[params::LOCAL_ENV_0_RELEASE].setCurrentValueBasicForSetup(
+	    getParamFromUserValue(params::LOCAL_ENV_0_RELEASE, 28));
+
+	for (int32_t k = 0; k < kNumSources; k++) {
+		if ((kickSources & (1 << k)) == 0) {
+			continue;
+		}
+		sources[k].transpose = static_cast<int16_t>(std::max(sources[k].transpose - 24, -96));
+		patched.params[params::LOCAL_OSC_A_PHASE_WIDTH + k].setCurrentValueBasicForSetup(0);
+		patched.params[params::LOCAL_OSC_A_WAVE_INDEX + k].setCurrentValueBasicForSetup(0);
+		patched.params[params::LOCAL_CARRIER_0_FEEDBACK + k].setCurrentValueBasicForSetup(
+		    std::numeric_limits<int32_t>::min());
+		patched.params[params::LOCAL_MODULATOR_0_FEEDBACK + k].setCurrentValueBasicForSetup(
+		    std::numeric_limits<int32_t>::min());
+		patched.params[params::LOCAL_MODULATOR_0_VOLUME + k].setCurrentValueBasicForSetup(
+		    std::numeric_limits<int32_t>::min());
+		patched.params[params::LOCAL_MODULATOR_0_PITCH_ADJUST + k].setCurrentValueBasicForSetup(0);
+	}
 }
 
 Error Sound::createParamManagerForLoading(ParamManagerForTimeline* paramManager) {
@@ -3965,6 +4084,28 @@ void Sound::compensateVolumeForResonance(ModelStackWithThreeMainThings* modelSta
 	}
 }
 
+/// The settings of the old Kick oscillator type that carry over to the Kick synth mode (see
+/// Sound::convertLegacyKickOscillators()). Returns false if tagName isn't one of them.
+static bool readLegacyKickSettingFromFile(Deserializer& reader, char const* tagName, Sound& sound) {
+	// exitTag() gets the literal, not tagName - the reader may reuse tagName's buffer while reading the value
+	if (!strcmp(tagName, "kickClickTime")) {
+		sound.legacyKickClickTime = std::clamp<int32_t>(reader.readTagOrAttributeValueInt(), 0, 100);
+		reader.exitTag("kickClickTime");
+	}
+	else if (!strcmp(tagName, "kickClickCurve")) {
+		sound.legacyKickClickCurve = std::clamp<int32_t>(reader.readTagOrAttributeValueInt(), -50, 50);
+		reader.exitTag("kickClickCurve");
+	}
+	else if (!strcmp(tagName, "kickBodyCurve")) {
+		sound.legacyKickBodyCurve = std::clamp<int32_t>(reader.readTagOrAttributeValueInt(), -50, 50);
+		reader.exitTag("kickBodyCurve");
+	}
+	else {
+		return false;
+	}
+	return true;
+}
+
 // paramManager only required for old old song files
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstack-usage="
@@ -3980,7 +4121,11 @@ Error Sound::readSourceFromFile(Deserializer& reader, int32_t s, ParamManagerFor
 	char const* tagName;
 	while (*(tagName = reader.readNextTagOrAttributeName())) {
 		if (!strcmp(tagName, "type")) {
-			source->setOscType(stringToOscType(reader.readTagOrAttributeValue()));
+			char const* typeName = reader.readTagOrAttributeValue();
+			if (!strcmp(typeName, "kick")) {
+				legacyKickSources |= 1 << s; // The old Kick oscillator - see convertLegacyKickOscillators()
+			}
+			source->setOscType(stringToOscType(typeName));
 			reader.exitTag("type");
 		}
 		else if (!strcmp(tagName, "phaseWidth")) {
@@ -4017,20 +4162,8 @@ Error Sound::readSourceFromFile(Deserializer& reader, int32_t s, ParamManagerFor
 			source->sampleControls.reversed = reader.readTagOrAttributeValueInt();
 			reader.exitTag("reversed");
 		}
-		else if (!strcmp(tagName, "dx7patch")) {
-			DxPatch* patch = source->ensureDxPatch();
-			int len = reader.readTagOrAttributeValueHexBytes(patch->params, 156);
-			reader.exitTag("dx7patch");
-		}
-		else if (!strcmp(tagName, "dx7randomdetune")) {
-			DxPatch* patch = source->ensureDxPatch();
-			patch->random_detune = reader.readTagOrAttributeValueInt();
-			reader.exitTag("dx7randomdetune");
-		}
-		else if (!strcmp(tagName, "dx7enginemode")) {
-			DxPatch* patch = source->ensureDxPatch();
-			patch->setEngineMode(reader.readTagOrAttributeValueInt());
-			reader.exitTag("dx7enginemode");
+		else if (readLegacyKickSettingFromFile(reader, tagName, *this)) {
+			// Old Kick oscillator setting - see convertLegacyKickOscillators()
 		}
 		else if (!strcmp(tagName, "phiMorphZoneA")) {
 			source->phiMorphZoneA = reader.readTagOrAttributeValueInt();
@@ -4052,50 +4185,6 @@ Error Sound::readSourceFromFile(Deserializer& reader, int32_t s, ParamManagerFor
 			source->phiMorphGamma = static_cast<float>(reader.readTagOrAttributeValueInt()) / 10.0f;
 			reader.exitTag("phiMorphGamma");
 		}
-		else if (!strcmp(tagName, "phiWeaveZoneA")) {
-			source->phiWeaveZoneA = reader.readTagOrAttributeValueInt();
-			reader.exitTag("phiWeaveZoneA");
-		}
-		else if (!strcmp(tagName, "phiWeaveZoneB")) {
-			source->phiWeaveZoneB = reader.readTagOrAttributeValueInt();
-			reader.exitTag("phiWeaveZoneB");
-		}
-		else if (!strcmp(tagName, "phiWeavePhaseA")) {
-			source->phiWeavePhaseOffsetA = static_cast<float>(reader.readTagOrAttributeValueInt()) / 10.0f;
-			reader.exitTag("phiWeavePhaseA");
-		}
-		else if (!strcmp(tagName, "phiWeavePhaseB")) {
-			source->phiWeavePhaseOffsetB = static_cast<float>(reader.readTagOrAttributeValueInt()) / 10.0f;
-			reader.exitTag("phiWeavePhaseB");
-		}
-		else if (!strcmp(tagName, "phiWeaveGamma")) {
-			source->phiWeaveGamma = static_cast<float>(reader.readTagOrAttributeValueInt()) / 10.0f;
-			reader.exitTag("phiWeaveGamma");
-		}
-		else if (!strcmp(tagName, "phiVoxZoneA")) {
-			source->phiVoxZoneA = reader.readTagOrAttributeValueInt();
-			reader.exitTag("phiVoxZoneA");
-		}
-		else if (!strcmp(tagName, "phiVoxZoneB")) {
-			source->phiVoxZoneB = reader.readTagOrAttributeValueInt();
-			reader.exitTag("phiVoxZoneB");
-		}
-		else if (!strcmp(tagName, "phiVoxPhaseA")) {
-			source->phiVoxPhaseOffsetA = static_cast<float>(reader.readTagOrAttributeValueInt()) / 10.0f;
-			reader.exitTag("phiVoxPhaseA");
-		}
-		else if (!strcmp(tagName, "phiVoxPhaseB")) {
-			source->phiVoxPhaseOffsetB = static_cast<float>(reader.readTagOrAttributeValueInt()) / 10.0f;
-			reader.exitTag("phiVoxPhaseB");
-		}
-		else if (!strcmp(tagName, "phiVoxGamma")) {
-			source->phiVoxGamma = static_cast<float>(reader.readTagOrAttributeValueInt()) / 10.0f;
-			reader.exitTag("phiVoxGamma");
-		}
-		else if (!strcmp(tagName, "phiVoxTracking")) {
-			source->phiVoxTracking = reader.readTagOrAttributeValueInt();
-			reader.exitTag("phiVoxTracking");
-		}
 		else if (!strcmp(tagName, "phiSwarmZoneA")) {
 			source->phiSwarmZoneA = reader.readTagOrAttributeValueInt();
 			reader.exitTag("phiSwarmZoneA");
@@ -4115,46 +4204,6 @@ Error Sound::readSourceFromFile(Deserializer& reader, int32_t s, ParamManagerFor
 		else if (!strcmp(tagName, "phiSwarmGamma")) {
 			source->phiSwarmGamma = static_cast<float>(reader.readTagOrAttributeValueInt()) / 10.0f;
 			reader.exitTag("phiSwarmGamma");
-		}
-		else if (!strcmp(tagName, "phiGendyZoneA")) {
-			source->phiGendyZoneA = reader.readTagOrAttributeValueInt();
-			reader.exitTag("phiGendyZoneA");
-		}
-		else if (!strcmp(tagName, "phiGendyZoneB")) {
-			source->phiGendyZoneB = reader.readTagOrAttributeValueInt();
-			reader.exitTag("phiGendyZoneB");
-		}
-		else if (!strcmp(tagName, "phiGendyPhaseA")) {
-			source->phiGendyPhaseOffsetA = static_cast<float>(reader.readTagOrAttributeValueInt()) / 10.0f;
-			reader.exitTag("phiGendyPhaseA");
-		}
-		else if (!strcmp(tagName, "phiGendyPhaseB")) {
-			source->phiGendyPhaseOffsetB = static_cast<float>(reader.readTagOrAttributeValueInt()) / 10.0f;
-			reader.exitTag("phiGendyPhaseB");
-		}
-		else if (!strcmp(tagName, "phiGendyGamma")) {
-			source->phiGendyGamma = static_cast<float>(reader.readTagOrAttributeValueInt()) / 10.0f;
-			reader.exitTag("phiGendyGamma");
-		}
-		else if (!strcmp(tagName, "phiStairZoneA")) {
-			source->phiStairZoneA = reader.readTagOrAttributeValueInt();
-			reader.exitTag("phiStairZoneA");
-		}
-		else if (!strcmp(tagName, "phiStairZoneB")) {
-			source->phiStairZoneB = reader.readTagOrAttributeValueInt();
-			reader.exitTag("phiStairZoneB");
-		}
-		else if (!strcmp(tagName, "phiStairPhaseA")) {
-			source->phiStairPhaseOffsetA = static_cast<float>(reader.readTagOrAttributeValueInt()) / 10.0f;
-			reader.exitTag("phiStairPhaseA");
-		}
-		else if (!strcmp(tagName, "phiStairPhaseB")) {
-			source->phiStairPhaseOffsetB = static_cast<float>(reader.readTagOrAttributeValueInt()) / 10.0f;
-			reader.exitTag("phiStairPhaseB");
-		}
-		else if (!strcmp(tagName, "phiStairGamma")) {
-			source->phiStairGamma = static_cast<float>(reader.readTagOrAttributeValueInt()) / 10.0f;
-			reader.exitTag("phiStairGamma");
 		}
 		else if (!strcmp(tagName, "phiStereoZone")) {
 			source->phiStereoZone = reader.readTagOrAttributeValueInt();
@@ -4510,23 +4559,6 @@ void Sound::writeSourceToFile(Serializer& writer, int32_t s, char const* tagName
 				goto justCloseTag;
 			}
 		}
-		else if (source->oscType == OscType::DX7
-		         && synthMode != SynthMode::FM) { // Don't combine this with the above "if" - there's an "else" below
-			if (source->dxPatch) {
-				DxPatch* patch = source->dxPatch;
-				writer.writeAttributeHexBytes("dx7patch", patch->params, 156);
-
-				if (patch->engineMode != 0) {
-					writer.writeAttribute("dx7enginemode", patch->engineMode);
-				}
-
-				// real extension:
-				if (patch->random_detune != 0) {
-					writer.writeAttribute("dx7randomdetune", patch->random_detune);
-				}
-			}
-			goto justCloseTag;
-		}
 		else {
 			// PHI_MORPH: persist zone knobs, phase offsets, and gamma
 			if (source->oscType == OscType::PHI_MORPH) {
@@ -4540,39 +4572,6 @@ void Sound::writeSourceToFile(Serializer& writer, int32_t s, char const* tagName
 				}
 				if (source->phiMorphGamma != 0.0f) {
 					writer.writeAttribute("phiMorphGamma", static_cast<int32_t>(source->phiMorphGamma * 10.0f));
-				}
-			}
-
-			// PHI_WEAVE: persist zone knobs, phase offsets, and gamma
-			if (source->oscType == OscType::PHI_WEAVE) {
-				writer.writeAttribute("phiWeaveZoneA", source->phiWeaveZoneA);
-				writer.writeAttribute("phiWeaveZoneB", source->phiWeaveZoneB);
-				if (source->phiWeavePhaseOffsetA != 0.0f) {
-					writer.writeAttribute("phiWeavePhaseA", static_cast<int32_t>(source->phiWeavePhaseOffsetA * 10.0f));
-				}
-				if (source->phiWeavePhaseOffsetB != 0.0f) {
-					writer.writeAttribute("phiWeavePhaseB", static_cast<int32_t>(source->phiWeavePhaseOffsetB * 10.0f));
-				}
-				if (source->phiWeaveGamma != 0.0f) {
-					writer.writeAttribute("phiWeaveGamma", static_cast<int32_t>(source->phiWeaveGamma * 10.0f));
-				}
-			}
-
-			// PHI_VOX: persist zone knobs, phase offsets, and gamma
-			if (source->oscType == OscType::PHI_VOX) {
-				writer.writeAttribute("phiVoxZoneA", source->phiVoxZoneA);
-				writer.writeAttribute("phiVoxZoneB", source->phiVoxZoneB);
-				if (source->phiVoxPhaseOffsetA != 0.0f) {
-					writer.writeAttribute("phiVoxPhaseA", static_cast<int32_t>(source->phiVoxPhaseOffsetA * 10.0f));
-				}
-				if (source->phiVoxPhaseOffsetB != 0.0f) {
-					writer.writeAttribute("phiVoxPhaseB", static_cast<int32_t>(source->phiVoxPhaseOffsetB * 10.0f));
-				}
-				if (source->phiVoxGamma != 0.0f) {
-					writer.writeAttribute("phiVoxGamma", static_cast<int32_t>(source->phiVoxGamma * 10.0f));
-				}
-				if (source->phiVoxTracking != 0) {
-					writer.writeAttribute("phiVoxTracking", source->phiVoxTracking);
 				}
 			}
 
@@ -4591,40 +4590,11 @@ void Sound::writeSourceToFile(Serializer& writer, int32_t s, char const* tagName
 				}
 			}
 
-			// PHI_STAIR: persist zone knobs, phase offsets, and gamma
-			if (source->oscType == OscType::PHI_STAIR) {
-				writer.writeAttribute("phiStairZoneA", source->phiStairZoneA);
-				writer.writeAttribute("phiStairZoneB", source->phiStairZoneB);
-				if (source->phiStairPhaseOffsetA != 0.0f) {
-					writer.writeAttribute("phiStairPhaseA", static_cast<int32_t>(source->phiStairPhaseOffsetA * 10.0f));
-				}
-				if (source->phiStairPhaseOffsetB != 0.0f) {
-					writer.writeAttribute("phiStairPhaseB", static_cast<int32_t>(source->phiStairPhaseOffsetB * 10.0f));
-				}
-				if (source->phiStairGamma != 0.0f) {
-					writer.writeAttribute("phiStairGamma", static_cast<int32_t>(source->phiStairGamma * 10.0f));
-				}
-			}
-
 			// Shared phi-family stereo zone
-			if (source->isPhiFamily() && source->phiStereoZone != 0) {
+			if (source->phiStereoCapable() && source->phiStereoZone != 0) {
 				writer.writeAttribute("phiStereoZone", source->phiStereoZone);
 			}
 
-			// PHI_GENDY: persist zone knobs, phase offsets, and gamma
-			if (source->oscType == OscType::PHI_GENDY) {
-				writer.writeAttribute("phiGendyZoneA", source->phiGendyZoneA);
-				writer.writeAttribute("phiGendyZoneB", source->phiGendyZoneB);
-				if (source->phiGendyPhaseOffsetA != 0.0f) {
-					writer.writeAttribute("phiGendyPhaseA", static_cast<int32_t>(source->phiGendyPhaseOffsetA * 10.0f));
-				}
-				if (source->phiGendyPhaseOffsetB != 0.0f) {
-					writer.writeAttribute("phiGendyPhaseB", static_cast<int32_t>(source->phiGendyPhaseOffsetB * 10.0f));
-				}
-				if (source->phiGendyGamma != 0.0f) {
-					writer.writeAttribute("phiGendyGamma", static_cast<int32_t>(source->phiGendyGamma * 10.0f));
-				}
-			}
 justCloseTag:
 			writer.closeTag();
 		}
@@ -4712,6 +4682,10 @@ bool Sound::readParamTagFromFile(Deserializer& reader, char const* tagName, Para
 	else if (!strcmp(tagName, "waveFold")) {
 		patchedParams->readParam(reader, patchedParamsSummary, params::LOCAL_FOLD, readAutomationUpToPos);
 		reader.exitTag("waveFold");
+	}
+	else if (!strcmp(tagName, "waveFoldSymmetry")) {
+		patchedParams->readParam(reader, patchedParamsSummary, params::LOCAL_FOLD_SYMMETRY, readAutomationUpToPos);
+		reader.exitTag("waveFoldSymmetry");
 	}
 
 	else if (!strcmp(tagName, "envelope1")) {
@@ -4999,6 +4973,16 @@ bool Sound::readParamTagFromFile(Deserializer& reader, char const* tagName, Para
 		reader.exitTag("globalScatterDensity");
 	}
 
+	// Harm params (patched, Sound context)
+	else if (!strcmp(tagName, "globalHarmLevel")) {
+		patchedParams->readParam(reader, patchedParamsSummary, params::GLOBAL_HARM_LEVEL, readAutomationUpToPos);
+		reader.exitTag("globalHarmLevel");
+	}
+	else if (!strcmp(tagName, "globalHarmFine")) {
+		patchedParams->readParam(reader, patchedParamsSummary, params::GLOBAL_HARM_FINE, readAutomationUpToPos);
+		reader.exitTag("globalHarmFine");
+	}
+
 	else if (ModControllableAudio::readParamTagFromFile(reader, tagName, paramManager, readAutomationUpToPos)) {}
 
 	else {
@@ -5079,6 +5063,9 @@ void Sound::writeParamsToFile(Serializer& writer, ParamManager* paramManager, bo
 	patchedParams->writeParamAsAttribute(writer, "hpfMorph", params::LOCAL_HPF_MORPH, writeAutomation);
 
 	patchedParams->writeParamAsAttribute(writer, "waveFold", params::LOCAL_FOLD, writeAutomation);
+	// Symmetry's default (centre) is 0, so onlyIfContainsSomething is safe here - unlike Harm Level.
+	patchedParams->writeParamAsAttribute(writer, "waveFoldSymmetry", params::LOCAL_FOLD_SYMMETRY, writeAutomation,
+	                                     true);
 
 	// Shaper params (patched, Sound context)
 	patchedParams->writeParamAsAttribute(writer, "tableShaperDrive", params::LOCAL_TABLE_SHAPER_DRIVE, writeAutomation,
@@ -5126,6 +5113,13 @@ void Sound::writeParamsToFile(Serializer& writer, ParamManager* paramManager, bo
 	                                     true);
 	patchedParams->writeParamAsAttribute(writer, "globalScatterDensity", params::GLOBAL_SCATTER_DENSITY,
 	                                     writeAutomation, true);
+
+	// Harm params (patched, Sound context). Level is always written rather than
+	// onlyIfContainsSomething: its default is -2147483648 (silence, see initParams), not 0, so a
+	// level sitting at exactly 0 - which is audible - would otherwise be skipped here and reload
+	// as silence. Fine's default IS 0, so the usual onlyIfContainsSomething applies.
+	patchedParams->writeParamAsAttribute(writer, "globalHarmLevel", params::GLOBAL_HARM_LEVEL, writeAutomation);
+	patchedParams->writeParamAsAttribute(writer, "globalHarmFine", params::GLOBAL_HARM_FINE, writeAutomation, true);
 
 	writer.writeOpeningTagEnd();
 
@@ -5175,6 +5169,15 @@ void Sound::writeToFile(Serializer& writer, bool savingSong, ParamManager* param
 	}
 
 	writer.writeAttribute("mode", (char*)synthModeToString(synthMode));
+	if (synthMode == SynthMode::KICK) {
+		writer.writeAttribute("kickPitchTime1", kickPitchTime[0]);
+		writer.writeAttribute("kickPitchTime2", kickPitchTime[1]);
+		writer.writeAttribute("kickPitchCurve1", kickPitchCurve[0]);
+		writer.writeAttribute("kickPitchCurve2", kickPitchCurve[1]);
+	}
+	if (!clickSamplePath.isEmpty()) {
+		writer.writeAttribute("clickSample", clickSamplePath.get());
+	}
 
 	if (transpose != 0) {
 		writer.writeAttribute("transpose", transpose);
@@ -5199,6 +5202,7 @@ void Sound::writeToFile(Serializer& writer, bool savingSong, ParamManager* param
 	writer.writeAbsoluteSyncLevelToFile(currentSong, "syncLevel", lfoConfig[LFO1_ID].syncLevel, false);
 	// Community Firmware parameters (always write them after the official ones, just before closing the parent tag)
 	writer.writeSyncTypeToFile(currentSong, "syncType", lfoConfig[LFO1_ID].syncType, false);
+	writeLFOExtraToFile(writer, lfoConfig[LFO1_ID]);
 	writer.closeTag();
 
 	writer.writeOpeningTagBeginning("lfo2");
@@ -5206,6 +5210,7 @@ void Sound::writeToFile(Serializer& writer, bool savingSong, ParamManager* param
 	// Community Firmware parameters
 	writer.writeAbsoluteSyncLevelToFile(currentSong, "syncLevel", lfoConfig[LFO2_ID].syncLevel, false);
 	writer.writeSyncTypeToFile(currentSong, "syncType", lfoConfig[LFO2_ID].syncType, false);
+	writeLFOExtraToFile(writer, lfoConfig[LFO2_ID]);
 	writer.closeTag();
 
 	writer.writeOpeningTagBeginning("lfo3");
@@ -5213,6 +5218,7 @@ void Sound::writeToFile(Serializer& writer, bool savingSong, ParamManager* param
 	writer.writeAbsoluteSyncLevelToFile(currentSong, "syncLevel", lfoConfig[LFO3_ID].syncLevel, false);
 	// Community Firmware parameters (always write them after the official ones, just before closing the parent tag)
 	writer.writeSyncTypeToFile(currentSong, "syncType", lfoConfig[LFO3_ID].syncType, false);
+	writeLFOExtraToFile(writer, lfoConfig[LFO3_ID]);
 	writer.closeTag();
 
 	writer.writeOpeningTagBeginning("lfo4");
@@ -5220,9 +5226,10 @@ void Sound::writeToFile(Serializer& writer, bool savingSong, ParamManager* param
 	// Community Firmware parameters
 	writer.writeAbsoluteSyncLevelToFile(currentSong, "syncLevel", lfoConfig[LFO4_ID].syncLevel, false);
 	writer.writeSyncTypeToFile(currentSong, "syncType", lfoConfig[LFO4_ID].syncType, false);
+	writeLFOExtraToFile(writer, lfoConfig[LFO4_ID]);
 	writer.closeTag();
 
-	if (synthMode == SynthMode::FM) {
+	if (usesModulators()) {
 
 		writer.writeOpeningTagBeginning("modulator1");
 		writer.writeAttribute("transpose", modulatorTranspose[0]);
@@ -5302,7 +5309,7 @@ int16_t Sound::getMaxOscTranspose(InstrumentClip* clip) {
 		}
 	}
 
-	if (getSynthMode() == SynthMode::FM) {
+	if (usesModulators()) {
 		maxRawOscTranspose = std::max(maxRawOscTranspose, (int32_t)modulatorTranspose[0]);
 		maxRawOscTranspose = std::max(maxRawOscTranspose, (int32_t)modulatorTranspose[1]);
 	}
@@ -5329,7 +5336,7 @@ int16_t Sound::getMinOscTranspose() {
 		}
 	}
 
-	if (getSynthMode() == SynthMode::FM) {
+	if (usesModulators()) {
 		minRawOscTranspose = std::min(minRawOscTranspose, (int32_t)modulatorTranspose[0]);
 		minRawOscTranspose = std::min(minRawOscTranspose, (int32_t)modulatorTranspose[1]);
 	}
@@ -5342,7 +5349,25 @@ int16_t Sound::getMinOscTranspose() {
 }
 
 // Returns true if more loading needed later
+Error Sound::setClickSample(char const* path) {
+	Error error = clickSample.load(path);
+	if (error != Error::NONE) {
+		return error;
+	}
+	return clickSamplePath.set(path);
+}
+
+void Sound::clearClickSample() {
+	clickSample.clear();
+	clickSamplePath.clear();
+}
+
 Error Sound::loadAllAudioFiles(bool mayActuallyReadFiles) {
+
+	// Kick mode click sample. A missing or broken file just leaves plain noise - it shouldn't stop the rest loading.
+	if (mayActuallyReadFiles && !clickSamplePath.isEmpty() && !clickSample.loaded()) {
+		clickSample.load(clickSamplePath.get());
+	}
 
 	for (int32_t s = 0; s < kNumSources; s++) {
 		if (sources[s].oscType == OscType::SAMPLE || sources[s].oscType == OscType::WAVETABLE) {
@@ -5922,7 +5947,9 @@ ModelStackWithAutoParam* Sound::getParamFromMIDIKnob(MIDIKnob& knob, ModelStackW
 }
 
 const Sound::ActiveVoice& Sound::acquireVoice() noexcept(false) {
-	if (voices_.size() >= maxVoiceCount) {
+	auto count_toward_voice_limit = [](const ActiveVoice& voice) { return !voice->isCullFading(); };
+
+	if (std::ranges::count_if(voices_, count_toward_voice_limit) >= maxVoiceCount) {
 		this->terminateOneActiveVoice();
 	}
 
@@ -5990,14 +6017,18 @@ void Sound::terminateOneActiveVoice() {
 		return;
 	}
 
-	ActiveVoice* best = &voices_.front();
-	for (ActiveVoice& voice : voices_ | std::views::drop(1)) {
-		// skip voices which are already releasing faster than we're going to release them
-		if (voice->envelopes[0].state >= EnvelopeStage::FAST_RELEASE
-		    && voice->envelopes[0].fastReleaseIncrement >= SOFT_CULL_INCREMENT) {
+	// The eligibility filter must apply to EVERY voice, including the first: seeding `best` with front()
+	// unfiltered meant a just-fast-released front voice (highest rating, since FAST_RELEASE outranks every
+	// sounding stage) absorbed every subsequent terminate in the same render window - so chords overran
+	// maxVoiceCount and the limiter sometimes chopped held notes instead (issue #4721).
+	ActiveVoice* best = nullptr;
+	for (ActiveVoice& voice : voices_) {
+		if (voice->isCullFading()) {
 			continue;
 		}
-		best = (*best)->getPriorityRating() < voice->getPriorityRating() ? &voice : best;
+		if (best == nullptr || (*best)->getPriorityRating() < voice->getPriorityRating()) {
+			best = &voice;
+		}
 	}
 
 	if (best == nullptr) {
@@ -6005,7 +6036,10 @@ void Sound::terminateOneActiveVoice() {
 	}
 
 	const ActiveVoice& voice = *best;
-	bool still_rendering = voice->doFastRelease(4 * SOFT_CULL_INCREMENT);
+	// SOFT_CULL_INCREMENT = a 128-sample (~2.9 ms) fade, matching release 1.2's voice-limit steal. Faster rates
+	// (the 4x, 32-sample sub-millisecond one) read as a pop on sustained material when a low maxVoices makes every
+	// note-on steal (issue #4721).
+	bool still_rendering = voice->doFastRelease(SOFT_CULL_INCREMENT);
 
 	if (!still_rendering) {
 		this->freeActiveVoice(voice);
@@ -6017,19 +6051,26 @@ void Sound::forceReleaseOneActiveVoice() {
 		return;
 	}
 
-	ActiveVoice* best = &voices_.front();
-	for (ActiveVoice& voice : voices_ | std::views::drop(1)) {
-		// skip voices releasing faster than this - we'd rather release another voice
-		if (voice->envelopes[0].state >= EnvelopeStage::FAST_RELEASE
-		    && voice->envelopes[0].fastReleaseIncrement >= 4096) {
+	// As in terminateOneActiveVoice: the filter must cover the first voice too, or an already-fast-releasing
+	// front voice (highest rating) soaks up every call in the window.
+	// Note isCullFading() only protects voices already fading at >= SOFT_CULL_INCREMENT; a voice fast-releasing
+	// more slowly (increment in [4096, SOFT_CULL_INCREMENT)) is still eligible, so speedUpRelease() below doubles
+	// it up to the cull-fade rate. This is intentional: a slow fade shouldn't be allowed to linger under load.
+	ActiveVoice* best = nullptr;
+	for (ActiveVoice& voice : voices_) {
+		if (voice->isCullFading()) {
 			continue;
 		}
-		best = (*best)->getPriorityRating() < voice->getPriorityRating() ? &voice : best;
+		if (best == nullptr || (*best)->getPriorityRating() < voice->getPriorityRating()) {
+			best = &voice;
+		}
+	}
+
+	if (best == nullptr) {
+		return;
 	}
 
 	const ActiveVoice& voice = *best;
-
-	auto stage = voice->envelopes[0].state;
 
 	bool still_rendering = voice->speedUpRelease();
 

@@ -195,7 +195,7 @@ void InstrumentClipMinder::drawMIDIControlNumber(int32_t controlNumber, bool aut
 	}
 }
 #pragma GCC pop
-bool InstrumentClipMinder::createNewInstrument(OutputType newOutputType, bool is_dx) {
+bool InstrumentClipMinder::createNewInstrument(OutputType newOutputType) {
 	Error error;
 
 	OutputType oldOutputType = getCurrentOutputType();
@@ -256,16 +256,11 @@ gotError:
 		display->consoleText(deluge::l10n::get(deluge::l10n::String::STRING_FOR_NEW_KIT_CREATED));
 	}
 	else {
-		if (is_dx) {
-			display->consoleText(deluge::l10n::get(deluge::l10n::String::STRING_FOR_NEW_FM_SYNTH_CREATED));
-		}
-		else {
-			display->consoleText(deluge::l10n::get(deluge::l10n::String::STRING_FOR_NEW_SYNTH_CREATED));
-		}
+		display->consoleText(deluge::l10n::get(deluge::l10n::String::STRING_FOR_NEW_SYNTH_CREATED));
 	}
 
 	if (newOutputType == OutputType::SYNTH) {
-		((SoundInstrument*)newInstrument)->setupAsBlankSynth(&newParamManager, is_dx);
+		((SoundInstrument*)newInstrument)->setupAsBlankSynth(&newParamManager);
 	}
 
 	char modelStackMemory[MODEL_STACK_MAX_SIZE];
@@ -312,11 +307,6 @@ gotError:
 	setLedStates();
 
 	newInstrument->name.set(&newName);
-
-	if (is_dx) {
-		soundEditor.setup(getCurrentInstrumentClip(), &dxMenu, 0);
-		openUI(&soundEditor);
-	}
 
 	if (display->haveOLED()) {
 		renderUIsForOled();
@@ -544,10 +534,7 @@ ActionResult InstrumentClipMinder::buttonAction(deluge::hid::Button b, bool on, 
 	// Which-instrument-type buttons
 	else if (b == SYNTH) {
 		if (on && currentUIMode == UI_MODE_NONE) {
-			if (Buttons::isButtonPressed(MOD7)) { // FM
-				createNewInstrument(OutputType::SYNTH, true);
-			}
-			else if (Buttons::isShiftButtonPressed()) {
+			if (Buttons::isShiftButtonPressed()) {
 				createNewInstrument(OutputType::SYNTH);
 			}
 			else {

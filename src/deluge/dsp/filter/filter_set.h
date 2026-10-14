@@ -18,6 +18,7 @@
 #pragma once
 
 #include "definitions_cxx.hpp"
+#include "dsp/filter/formant.h"
 #include "dsp/filter/hpladder.h"
 #include "dsp/filter/lpladder.h"
 #include "dsp/filter/svf.h"
@@ -32,6 +33,7 @@ namespace deluge::dsp::filter {
 union LowPass {
 	LpLadderFilter ladder;
 	SVFilter svf;
+	FormantFilter formant;
 	LowPass() {}
 };
 

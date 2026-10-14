@@ -28,8 +28,6 @@
 
 #include <hid/display/oled.h>
 
-extern gui::menu_item::Submenu dxMenu;
-
 namespace deluge::gui::menu_item::osc {
 class Type final : public Selection, public FormattedTitle {
 public:
@@ -37,37 +35,23 @@ public:
 	    : Selection(name), FormattedTitle(title_format_str, source_id + 1), sourceId_{source_id} {};
 	void beginSession(MenuItem* navigatedBackwardFrom) override { Selection::beginSession(navigatedBackwardFrom); }
 
-	bool mayUseDx() const { return !soundEditor.editingKit() && sourceId_ == 0; }
-
 	void readCurrentValue() override {
-		int32_t rawVal = static_cast<int32_t>(soundEditor.currentSound->sources[sourceId_].oscType);
-		if (!mayUseDx() && rawVal > static_cast<int32_t>(OscType::DX7)) {
-			rawVal -= 1;
-		}
-		setValue(rawVal);
+		setValue(static_cast<int32_t>(soundEditor.currentSound->sources[sourceId_].oscType));
 	}
 	void writeCurrentValue() override {
 		OscType oldValue = soundEditor.currentSound->sources[sourceId_].oscType;
-		auto newValue = getValue<OscType>();
-		if (!mayUseDx() && static_cast<int32_t>(newValue) >= static_cast<int32_t>(OscType::DX7)) {
-			newValue = static_cast<OscType>(static_cast<int32_t>(newValue) + 1);
-		}
+		const auto newValue = getValue<OscType>();
 
 		const auto needs_unassignment = {
 		    OscType::INPUT_L,
 		    OscType::INPUT_R,
 		    OscType::INPUT_STEREO,
 		    OscType::SAMPLE,
-		    OscType::DX7,
 
 		    // Haven't actually really determined if this needs to be here - maybe not?
 		    OscType::WAVETABLE,
 		    OscType::PHI_MORPH,
-		    OscType::PHI_STAIR,
-		    OscType::PHI_WEAVE,
-		    OscType::PHI_VOX,
 		    OscType::PHI_SWARM,
-		    OscType::PHI_GENDY,
 		};
 
 		if (util::one_of(oldValue, needs_unassignment) || util::one_of(newValue, needs_unassignment)) {
@@ -96,22 +80,10 @@ public:
 		    l10n::getView(STRING_FOR_ANALOG_SAW),    //<
 		    l10n::getView(STRING_FOR_WAVETABLE),     //<
 		    l10n::getView(STRING_FOR_PHI_MORPH),     //<
-		    l10n::getView(STRING_FOR_PHI_STAIR),     //<
-		    l10n::getView(STRING_FOR_PHI_WEAVE),     //<
-		    l10n::getView(STRING_FOR_PHI_VOX),       //<
 		    l10n::getView(STRING_FOR_PHI_SWARM),     //<
-		    l10n::getView(STRING_FOR_PHI_GENDY),     //<
 		};
 
-		if (soundEditor.currentSound->getSynthMode() == SynthMode::RINGMOD) {
-			return options;
-		}
-
 		options.emplace_back(l10n::getView(STRING_FOR_SAMPLE));
-
-		if (mayUseDx()) {
-			options.emplace_back(l10n::getView(STRING_FOR_DX7));
-		}
 
 		if (AudioEngine::micPluggedIn || AudioEngine::lineInPluggedIn) {
 			options.emplace_back(l10n::getView(STRING_FOR_INPUT_LEFT));
@@ -130,24 +102,12 @@ public:
 		return (sound->getSynthMode() != SynthMode::FM);
 	}
 
-	MenuItem* selectButtonPress() override {
-		if (soundEditor.currentSound->sources[sourceId_].oscType != OscType::DX7) {
-			return nullptr;
-		}
-		return &dxMenu;
-	}
-
 	[[nodiscard]] bool showColumnLabel() const override { return false; }
 
 	void renderInHorizontalMenu(const SlotPosition& slot) override {
 		oled_canvas::Canvas& image = OLED::main;
 
 		const OscType osc_type = soundEditor.currentSound->sources[sourceId_].oscType;
-		if (osc_type == OscType::DX7) {
-			const auto option = getOptions(OptType::FULL)[getValue()].data();
-			return image.drawStringCentered(option, slot.start_x, slot.start_y + kHorizontalMenuSlotYOffset + 5,
-			                                kTextTitleSpacingX, kTextTitleSizeY, slot.width);
-		}
 
 		const Icon& icon = [&] {
 			switch (osc_type) {
@@ -172,16 +132,8 @@ public:
 				return OLED::wavetableIcon;
 			case OscType::PHI_MORPH:
 				return OLED::phiMorphIcon;
-			case OscType::PHI_WEAVE:
-				return OLED::phiWeaveIcon;
-			case OscType::PHI_VOX:
-				return OLED::phiVoxIcon;
 			case OscType::PHI_SWARM:
 				return OLED::phiSwarmIcon;
-			case OscType::PHI_GENDY:
-				return OLED::phiGendyIcon;
-			case OscType::PHI_STAIR:
-				return OLED::phiStairIcon;
 			default:
 				return OLED::sineIcon;
 			}

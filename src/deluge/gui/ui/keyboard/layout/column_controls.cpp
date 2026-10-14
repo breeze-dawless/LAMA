@@ -44,7 +44,6 @@ l10n::String functionNames[] = {
     l10n::String::STRING_FOR_COLUMN_SONG_CHORD_MEM,
     l10n::String::STRING_FOR_COLUMN_CHORD_MEM,
     l10n::String::STRING_FOR_COLUMN_SCALE_MODE,
-    l10n::String::STRING_FOR_COLUMN_DX,
     l10n::String::STRING_FOR_COLUMN_SESSION,
     l10n::String::STRING_FOR_COLUMN_BEAT_REPEAT,
 };
@@ -133,11 +132,10 @@ void ColumnControlsKeyboard::handleHorizontalEncoder(int32_t offset, bool shiftE
 
 ColumnControlFunction ColumnControlsKeyboard::nextControlFunction(ColumnControlFunction cur,
                                                                   ColumnControlFunction skip) {
-	bool has_dx = (getCurrentDxPatch() != nullptr);
 	auto out = cur;
 	while (true) {
 		out = static_cast<ColumnControlFunction>((out + 1) % COL_CTRL_FUNC_MAX);
-		if (out != skip && (has_dx || out != DX) && allowSidebarType(out)) {
+		if (out != skip && allowSidebarType(out)) {
 			return out;
 		}
 	}
@@ -145,48 +143,20 @@ ColumnControlFunction ColumnControlsKeyboard::nextControlFunction(ColumnControlF
 
 ColumnControlFunction ColumnControlsKeyboard::prevControlFunction(ColumnControlFunction cur,
                                                                   ColumnControlFunction skip) {
-	bool has_dx = (getCurrentDxPatch() != nullptr);
 	auto out = cur;
 	while (true) {
 		out = static_cast<ColumnControlFunction>(out - 1);
 		if (out < 0) {
 			out = static_cast<ColumnControlFunction>(COL_CTRL_FUNC_MAX - 1);
 		}
-		if (out != skip && (has_dx || out != DX) && allowSidebarType(out)) {
+		if (out != skip && allowSidebarType(out)) {
 			return out;
 		}
 	}
 }
 
 void ColumnControlsKeyboard::checkNewInstrument(Instrument* newInstrument) {
-	if (newInstrument->type != OutputType::SYNTH) {
-		return;
-	}
-	ColumnControlState& state = getState().columnControl;
-	auto* sound = (SoundInstrument*)newInstrument;
-	bool is_dx = (sound->sources[0].oscType == OscType::DX7);
-	if (!is_dx) {
-		if (state.rightColFunc == DX) {
-			state.rightColSetAtRuntime = false;
-			state.rightColFunc = nextControlFunction(state.rightColFunc, state.leftColFunc);
-			state.rightCol = state.getColumnForFunc(state.rightColFunc);
-		}
-		else if (state.leftColFunc == DX) {
-			state.leftColFunc = nextControlFunction(state.leftColFunc, state.rightColFunc);
-			state.leftCol = state.getColumnForFunc(state.leftColFunc);
-		}
-	}
-	else {
-		if (runtimeFeatureSettings.get(RuntimeFeatureSettingType::EnableDX7Engine) == RuntimeFeatureStateToggle::Off) {
-			return;
-		}
-		// don't change column if already set
-		if (state.leftColFunc == DX || state.rightColFunc == DX || state.rightColSetAtRuntime) {
-			return;
-		}
-		state.rightColFunc = DX;
-		state.rightCol = state.getColumnForFunc(state.rightColFunc);
-	}
+	(void)newInstrument; // Nothing depends on the instrument any more (the DX7 column went with the DX7 engine)
 }
 
 ColumnControlFunction ColumnControlsKeyboard::stepControlFunction(int32_t offset, ColumnControlFunction cur,
@@ -208,8 +178,6 @@ ControlColumn* ColumnControlState::getColumnForFunc(ColumnControlFunction func) 
 		return &chordMemColumn;
 	case SCALE_MODE:
 		return &scaleModeColumn;
-	case DX:
-		return &dxColumn;
 	case SESSION:
 		return &sessionColumn;
 	// explicit fallthrough cases
@@ -232,8 +200,6 @@ const char* columnFunctionToString(ColumnControlFunction func) {
 		return "clip_chord_mem";
 	case SCALE_MODE:
 		return "scale_mode";
-	case DX:
-		return "dx";
 	case SESSION:
 		return "session";
 	// explicit fallthrough cases
@@ -261,9 +227,6 @@ ColumnControlFunction stringToColumnFunction(char const* string) {
 	}
 	else if (!strcmp(string, "scale_mode")) {
 		return SCALE_MODE;
-	}
-	else if (!strcmp(string, "dx")) {
-		return DX;
 	}
 	else if (!strcmp(string, "session")) {
 		return SESSION;

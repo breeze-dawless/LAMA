@@ -189,10 +189,11 @@ enum class UIType : uint8_t {
 	AUDIO_CLIP,
 	AUDIO_RECORDER,
 	AUTOMATION,
+	CLICK_SAMPLE_BROWSER,
 	CONTEXT_MENU,
-	DX_BROWSER,
 	INSTRUMENT_CLIP,
 	KEYBOARD_SCREEN,
+	LFO_SHAPE_EDITOR,
 	LOAD_INSTRUMENT_PRESET,
 	LOAD_MIDI_DEVICE_DEFINITION,
 	LOAD_PATTERN,
@@ -372,20 +373,13 @@ enum class OscType : uint8_t {
 	ANALOG_SAW_2,
 	WAVETABLE,
 	PHI_MORPH,
-	PHI_STAIR,
-	PHI_WEAVE,
-	PHI_VOX,
 	PHI_SWARM,
-	PHI_GENDY,
 	SAMPLE,
-	DX7,
 	INPUT_L,
 	INPUT_R,
 	INPUT_STEREO,
 };
 
-constexpr OscType kLastRingmoddableOscType = OscType::PHI_GENDY;
-constexpr int32_t kNumOscTypesRingModdable = util::to_underlying(kLastRingmoddableOscType) + 1;
 constexpr int32_t kNumOscTypes = util::to_underlying(OscType::INPUT_STEREO) + 1;
 
 /** Integer index into Sound::lfoConfig[].
@@ -416,9 +410,10 @@ enum class LFOType : uint8_t {
 	SAMPLE_AND_HOLD,
 	RANDOM_WALK,
 	WARBLER,
+	CUSTOM, // Drawn by the user (modulation/lfo_shape.h, gui/ui/lfo_shape_editor.h)
 };
 
-constexpr int32_t kNumLFOTypes = util::to_underlying(LFOType::WARBLER) + 1;
+constexpr int32_t kNumLFOTypes = util::to_underlying(LFOType::CUSTOM) + 1;
 
 enum class ModFXType : uint8_t {
 	NONE,
@@ -441,9 +436,9 @@ constexpr int32_t kNumCompressorModes = util::to_underlying(CompressorMode::MULT
 enum class SynthMode : uint8_t {
 	SUBTRACTIVE,
 	FM,
-	RINGMOD,
+	KICK, // Subtractive oscillators + FM modulators shaping them + envelopes 3/4 as pitch envelopes (dsp/kick_mode.hpp)
 };
-constexpr int kNumSynthModes = util::to_underlying(::SynthMode::RINGMOD) + 1;
+constexpr int kNumSynthModes = util::to_underlying(::SynthMode::KICK) + 1;
 
 constexpr int32_t SAMPLE_MAX_TRANSPOSE = 24;
 constexpr int32_t SAMPLE_MIN_TRANSPOSE = (-96);

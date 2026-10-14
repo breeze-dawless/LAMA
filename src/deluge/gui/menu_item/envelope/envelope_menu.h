@@ -18,6 +18,7 @@
 #pragma once
 #include "gui/menu_item/horizontal_menu.h"
 #include "hid/display/oled.h"
+#include "kick_pitch.h"
 #include "segment.h"
 
 using namespace deluge::hid::display;
@@ -26,12 +27,23 @@ namespace deluge::gui::menu_item::envelope {
 class EnvelopeMenu final : public HorizontalMenu, FormattedTitle {
 public:
 	EnvelopeMenu(l10n::String newName, std::span<MenuItem*> newItems, int32_t envelopeIndex)
-	    : HorizontalMenu(newName, newItems), FormattedTitle(newName, envelopeIndex + 1) {}
+	    : HorizontalMenu(newName, newItems), FormattedTitle(newName, envelopeIndex + 1), envelopeIndex_(envelopeIndex) {
+	}
 
 	[[nodiscard]] std::string_view getName() const override { return FormattedTitle::title(); }
 	[[nodiscard]] std::string_view getTitle() const override { return FormattedTitle::title(); }
 
 	void renderMenuItems(std::span<MenuItem*> items, const MenuItem* currentItem) override {
+		// Kick synth mode: envelopes 3 and 4 are pitch envelopes, showing their sweep instead
+		if (soundEditor.currentSound != nullptr
+		    && kick_pitch::isPitchEnvelope(soundEditor.currentSound, envelopeIndex_)) {
+			kick_pitch::drawPitchEnvelope(envelopeIndex_, currentItem);
+			return;
+		}
+		if (items.size() < 4) {
+			return;
+		}
+
 		// Get the values in 0-50 range
 		const int32_t attack = static_cast<Segment*>(items[0])->getValue();
 		const int32_t decay = static_cast<Segment*>(items[1])->getValue();
@@ -97,6 +109,7 @@ public:
 	}
 
 private:
+	int32_t envelopeIndex_;
 	int32_t selected_x_, selected_y_;
 
 	void drawTransitionIndicator(const float center_x, const float center_y, const bool is_selected) {

@@ -146,6 +146,7 @@ char const* getPatchedParamShortName(ParamType type) {
 	    [LOCAL_OSC_B_START_OFFSET]       = "Offset B",
 	    [LOCAL_OSC_A_PHASE]              = "Osc1 phase",
 	    [LOCAL_OSC_B_PHASE]              = "Osc2 phase",
+	    [LOCAL_FOLD_SYMMETRY]            = "Fold sym",
 	    [LOCAL_SINE_SHAPER_TWIST]        = "Sine twist",
 	    [LOCAL_SINE_SHAPER_HARMONIC]     = "Sine harm",
 	    [LOCAL_LPF_FREQ]                 = "LPf freq",
@@ -246,6 +247,7 @@ char const* getPatchedParamDisplayName(int32_t p) {
 	    [LOCAL_OSC_B_START_OFFSET] = STRING_FOR_START_OFFSET,
 	    [LOCAL_OSC_A_PHASE] = STRING_FOR_PARAM_LOCAL_OSC_A_PHASE,
 	    [LOCAL_OSC_B_PHASE] = STRING_FOR_PARAM_LOCAL_OSC_B_PHASE,
+	    [LOCAL_FOLD_SYMMETRY] = STRING_FOR_PARAM_LOCAL_FOLD_SYMMETRY,
 	    [LOCAL_SINE_SHAPER_TWIST] = STRING_FOR_SINE_SHAPER_SYMMETRY, // Reuse existing twist/symmetry string
 	    [LOCAL_SINE_SHAPER_HARMONIC] = STRING_FOR_SINE_SHAPER_HARMONIC,
 	    [LOCAL_LPF_FREQ] = STRING_FOR_PARAM_LOCAL_LPF_FREQ,
@@ -323,6 +325,7 @@ char const* getParamDisplayName(Kind kind, int32_t p) {
 		    [UNPATCHED_TREBLE] = STRING_FOR_TREBLE,
 		    [UNPATCHED_BASS_FREQ] = STRING_FOR_BASS_FREQUENCY,
 		    [UNPATCHED_TREBLE_FREQ] = STRING_FOR_TREBLE_FREQUENCY,
+		    [UNPATCHED_MID] = STRING_FOR_MID,
 		    [UNPATCHED_SAMPLE_RATE_REDUCTION] = STRING_FOR_DECIMATION,
 		    [UNPATCHED_BITCRUSHING] = STRING_FOR_BITCRUSH,
 		    [UNPATCHED_MOD_FX_OFFSET] = STRING_FOR_MODFX_OFFSET,
@@ -550,6 +553,9 @@ constexpr char const* paramNameForFileConst(Kind const kind, ParamType const par
 
 		case UNPATCHED_TREBLE_FREQ:
 			return "trebleFreq";
+
+		case UNPATCHED_MID:
+			return "mid";
 
 		case UNPATCHED_SAMPLE_RATE_REDUCTION:
 			return "sampleRateReduction";
@@ -847,6 +853,9 @@ constexpr char const* paramNameForFileConst(Kind const kind, ParamType const par
 
 		case LOCAL_OSC_B_PHASE:
 			return "oscBPhase";
+
+		case LOCAL_FOLD_SYMMETRY:
+			return "waveFoldSymmetry";
 
 		case LOCAL_SINE_SHAPER_TWIST:
 			return "sineShaperTwist";

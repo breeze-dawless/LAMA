@@ -186,7 +186,10 @@ void Submenu::selectEncoderAction(int32_t offset) {
 
 bool Submenu::shouldForwardButtons() {
 	// Should we deliver buttons to selected menu item instead?
-	return (*current_item_)->isSubmenu() == false && renderingStyle() == RenderingStyle::HORIZONTAL;
+	// current_item_ stays at items.end() until the menu has focused a child once, and getParamKind() can be asked
+	// before beginSession() (pad shortcuts do that while another menu is open) - never dereference end() then.
+	return current_item_ != items.end() && (*current_item_)->isSubmenu() == false
+	       && renderingStyle() == RenderingStyle::HORIZONTAL;
 }
 
 MenuItem* Submenu::selectButtonPress() {

@@ -16,8 +16,6 @@
  */
 
 #include "model/voice/voice_unison_part_source.h"
-#include "dsp/dx/dx7note.h"
-#include "dsp/dx/engine.h"
 #include "memory/general_memory_allocator.h"
 #include "model/sample/sample_cache.h"
 #include "model/song/song.h"
@@ -25,6 +23,7 @@
 #include "model/voice/voice_sample.h"
 #include "playback/playback_handler.h"
 #include "processing/engines/audio_engine.h"
+#include "processing/live/live_pitch_shifter.h"
 #include "processing/source.h"
 #include "storage/multi_range/multisample_range.h"
 
@@ -33,8 +32,8 @@ bool VoiceUnisonPartSource::noteOn(Voice* voice, Source* source, VoiceSamplePlay
                                    uint8_t velocity) {
 
 	// Fresh per-voice scratch state for its various users (TRIANGLE_PW phase
-	// scaler, PHI_SWARM slave phases, PHI_VOX formant state) - voices are
-	// pooled, so stale values otherwise leak across notes
+	// scaler, PHI_SWARM slave phases) - voices are pooled, so stale values
+	// otherwise leak across notes
 	prevPhaseScaler = 0;
 
 	if (synthMode != SynthMode::FM && source->oscType == OscType::SAMPLE) {
@@ -76,16 +75,13 @@ bool VoiceUnisonPartSource::noteOn(Voice* voice, Source* source, VoiceSamplePlay
 	        || source->oscType == OscType::INPUT_R || source->oscType == OscType::INPUT_STEREO)) {
 		// oscPos = 0;
 	}
-	else if (synthMode != SynthMode::FM && source->oscType == OscType::DX7) [[unlikely]] {
-		if (dxVoice == nullptr) { // We might actually already have one, and just be restarting this voice
-			dxVoice = getDxEngine()->solicitDxVoice();
-			if (dxVoice == nullptr) {
-				return false;
-			}
+	else if (synthMode == SynthMode::KICK) {
+		// Kick mode: every hit starts its oscillators at the same point (retrigger phase "off" means 0 here). A legato
+		// note-on just keeps them running.
+		if (resetEverything) {
+			oscPos = getOscInitialPhaseForZero(source->oscType)
+			         + ((oscRetriggerPhase != 0xFFFFFFFF) ? oscRetriggerPhase : 0);
 		}
-
-		DxPatch* patch = source->ensureDxPatch();
-		dxVoice->init(*patch, voice->noteCodeAfterArpeggiation, velocity);
 	}
 	else {
 		if (oscRetriggerPhase != 0xFFFFFFFF) {
@@ -108,12 +104,8 @@ void VoiceUnisonPartSource::unassign(bool deletingSong) {
 		voiceSample = nullptr;
 	}
 
-	if (dxVoice != nullptr) {
-		dxEngine->dxVoiceUnassigned(dxVoice);
-		dxVoice = nullptr;
-	}
-
 	if (livePitchShifter != nullptr) {
+		livePitchShifter->~LivePitchShifter();
 		delugeDealloc(livePitchShifter);
 		livePitchShifter = nullptr;
 	}

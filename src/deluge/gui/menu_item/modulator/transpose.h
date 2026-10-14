@@ -52,7 +52,7 @@ public:
 					auto* soundDrum = static_cast<SoundDrum*>(thisDrum);
 
 					// Note: we need to apply the same filtering as stated in the isRelevant() function
-					if (soundDrum->getSynthMode() == SynthMode::FM) {
+					if (soundDrum->usesModulators()) {
 						char modelStackMemoryForSoundDrum[MODEL_STACK_MAX_SIZE];
 						ModelStackWithSoundFlags* modelStackForSoundDrum =
 						    getModelStackFromSoundDrum(modelStackMemoryForSoundDrum, soundDrum)->addSoundFlags();
@@ -75,7 +75,7 @@ public:
 
 	bool isRelevant(ModControllableAudio* modControllable, int32_t whichThing) override {
 		Sound* sound = static_cast<Sound*>(modControllable);
-		return (sound->getSynthMode() == SynthMode::FM);
+		return sound->usesModulators();
 	}
 };
 

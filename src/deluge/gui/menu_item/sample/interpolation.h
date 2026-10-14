@@ -64,7 +64,7 @@ public:
 		}
 		const auto sound = static_cast<Sound*>(modControllable);
 		Source& source = sound->sources[source_id_];
-		return sound->getSynthMode() == ::SynthMode::SUBTRACTIVE
+		return sound->hasSubtractiveOscillators()
 		       && ((source.oscType == OscType::SAMPLE && source.hasAtLeastOneAudioFileLoaded())
 		           || source.oscType == OscType::INPUT_L || source.oscType == OscType::INPUT_R
 		           || source.oscType == OscType::INPUT_STEREO);

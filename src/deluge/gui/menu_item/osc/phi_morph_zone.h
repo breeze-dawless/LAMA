@@ -55,31 +55,12 @@ public:
 	[[nodiscard]] const char* getZoneName(int32_t zoneIndex) const override {
 		static const char* const kMorphNames[8] = {"Ember", "Coral", "Prism", "Jade",
 		                                           "Azure", "Ivory", "Slate", "Onyx"};
-		static const char* const kWeaveNames[8] = {"Silk", "Wool", "Reed", "Vine", "Bone", "Glass", "Steel", "Storm"};
-		static const char* const kVoxNames[8] = {"Breath", "Hum", "Round", "Open", "Bright", "Nasal", "Growl", "Rasp"};
 		static const char* const kSwarmNames[8] = {"Still", "Drift", "Pull", "Swarm",
 		                                           "Flock", "Surge", "Fray", "Chaos"};
-		static const char* const kGendyNames[8] = {"Haze", "Murmur", "Wander", "Ripple",
-		                                           "Boil", "Writhe", "Snarl",  "Frenzy"};
-		static const char* const kStairNames[8] = {"Brick", "Terrace", "Ramp",  "Mesa",
-		                                           "Pylon", "Glyph",   "Shard", "Teeth"};
 		if (zoneIndex < 0 || zoneIndex >= 8) {
 			return "?";
 		}
-		switch (currentType()) {
-		case OscType::PHI_WEAVE:
-			return kWeaveNames[zoneIndex];
-		case OscType::PHI_VOX:
-			return kVoxNames[zoneIndex];
-		case OscType::PHI_SWARM:
-			return kSwarmNames[zoneIndex];
-		case OscType::PHI_GENDY:
-			return kGendyNames[zoneIndex];
-		case OscType::PHI_STAIR:
-			return kStairNames[zoneIndex];
-		default:
-			return kMorphNames[zoneIndex];
-		}
+		return (currentType() == OscType::PHI_SWARM) ? kSwarmNames[zoneIndex] : kMorphNames[zoneIndex];
 	}
 
 	void selectEncoderAction(int32_t offset) override {
@@ -145,63 +126,23 @@ private:
 
 	[[nodiscard]] uint16_t& zoneField() const {
 		auto& source = soundEditor.currentSound->sources[sourceId_];
-		switch (currentType()) {
-		case OscType::PHI_WEAVE:
-			return (zoneId_ == 0) ? source.phiWeaveZoneA : source.phiWeaveZoneB;
-		case OscType::PHI_VOX:
-			return (zoneId_ == 0) ? source.phiVoxZoneA : source.phiVoxZoneB;
-		case OscType::PHI_SWARM:
+		if (currentType() == OscType::PHI_SWARM) {
 			return (zoneId_ == 0) ? source.phiSwarmZoneA : source.phiSwarmZoneB;
-		case OscType::PHI_GENDY:
-			return (zoneId_ == 0) ? source.phiGendyZoneA : source.phiGendyZoneB;
-		case OscType::PHI_STAIR:
-			return (zoneId_ == 0) ? source.phiStairZoneA : source.phiStairZoneB;
-		default:
-			return (zoneId_ == 0) ? source.phiMorphZoneA : source.phiMorphZoneB;
 		}
+		return (zoneId_ == 0) ? source.phiMorphZoneA : source.phiMorphZoneB;
 	}
 
 	[[nodiscard]] float& phaseField() const {
 		auto& source = soundEditor.currentSound->sources[sourceId_];
-		switch (currentType()) {
-		case OscType::PHI_WEAVE:
-			return (zoneId_ == 0) ? source.phiWeavePhaseOffsetA : source.phiWeavePhaseOffsetB;
-		case OscType::PHI_VOX:
-			return (zoneId_ == 0) ? source.phiVoxPhaseOffsetA : source.phiVoxPhaseOffsetB;
-		case OscType::PHI_SWARM:
+		if (currentType() == OscType::PHI_SWARM) {
 			return (zoneId_ == 0) ? source.phiSwarmPhaseOffsetA : source.phiSwarmPhaseOffsetB;
-		case OscType::PHI_GENDY:
-			return (zoneId_ == 0) ? source.phiGendyPhaseOffsetA : source.phiGendyPhaseOffsetB;
-		case OscType::PHI_STAIR:
-			return (zoneId_ == 0) ? source.phiStairPhaseOffsetA : source.phiStairPhaseOffsetB;
-		default:
-			return (zoneId_ == 0) ? source.phiMorphPhaseOffsetA : source.phiMorphPhaseOffsetB;
 		}
+		return (zoneId_ == 0) ? source.phiMorphPhaseOffsetA : source.phiMorphPhaseOffsetB;
 	}
 
 	[[nodiscard]] float effectivePhaseOffset() const {
 		auto& source = soundEditor.currentSound->sources[sourceId_];
-		float gamma;
-		switch (currentType()) {
-		case OscType::PHI_WEAVE:
-			gamma = source.phiWeaveGamma;
-			break;
-		case OscType::PHI_VOX:
-			gamma = source.phiVoxGamma;
-			break;
-		case OscType::PHI_SWARM:
-			gamma = source.phiSwarmGamma;
-			break;
-		case OscType::PHI_GENDY:
-			gamma = source.phiGendyGamma;
-			break;
-		case OscType::PHI_STAIR:
-			gamma = source.phiStairGamma;
-			break;
-		default:
-			gamma = source.phiMorphGamma;
-			break;
-		}
+		const float gamma = (currentType() == OscType::PHI_SWARM) ? source.phiSwarmGamma : source.phiMorphGamma;
 		return getPhaseOffset() + static_cast<float>(kPhiMorphZoneResolution) * gamma;
 	}
 

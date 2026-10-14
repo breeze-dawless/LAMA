@@ -16,9 +16,11 @@
  */
 #pragma once
 #include "deluge/modulation/params/param.h"
+#include "dsp/kick_mode.hpp"
 #include "gui/menu_item/formatted_title.h"
 #include "gui/menu_item/param.h"
 #include "gui/menu_item/source/patched_param.h"
+#include "processing/sound/sound.h"
 
 namespace deluge::gui::menu_item::envelope {
 class Segment : public source::PatchedParam, FormattedTitle {
@@ -27,6 +29,12 @@ public:
 	    : PatchedParam(newName, title, newP, source_id), FormattedTitle(title, source_id + 1) {}
 
 	[[nodiscard]] std::string_view getTitle() const override { return FormattedTitle::title(); }
+
+	// In the Kick synth mode, envelopes 3 and 4 are pitch envelopes, with their own controls (see kick_pitch.h)
+	bool isRelevant(ModControllableAudio* modControllable, int32_t whichThing) override {
+		return source_id_ < kNumEnvelopes - dsp::kick_mode::kNumPitchEnvelopes
+		       || static_cast<Sound*>(modControllable)->synthMode != SynthMode::KICK;
+	}
 
 	void getColumnLabel(StringBuf& label) override {
 		const auto& shortNameString = getShortEnvelopeParamName(menu_item::PatchedParam::getP());

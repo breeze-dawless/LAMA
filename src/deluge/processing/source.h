@@ -21,21 +21,17 @@
 #include "model/sample/sample_controls.h"
 #include "storage/multi_range/multi_range_array.h"
 #include "util/phase_increment_fine_tuner.h"
+#include <array>
 
 namespace deluge::dsp {
 struct PhiMorphCache;
-struct PhiWeaveCache;
-struct PhiVoxCache;
 struct PhiSwarmCache;
-struct PhiGendyCache;
-struct PhiStairCache;
 } // namespace deluge::dsp
 
 class Sound;
 class ParamManagerForTimeline;
 class WaveTable;
 class SampleHolder;
-class DxPatch;
 
 class Source {
 public:
@@ -53,8 +49,6 @@ public:
 
 	MultiRangeArray ranges;
 
-	DxPatch* dxPatch;
-	bool dxPatchChanged = false;
 	SampleRepeatMode repeatMode;
 
 	// PHI_MORPH zone parameters and cache (lazily allocated)
@@ -65,24 +59,7 @@ public:
 	float phiMorphGamma{0.0f}; // Shared phase multiplier (push+twist on wave index)
 	deluge::dsp::PhiMorphCache* phiMorphCache{nullptr};
 
-	// PHI_WEAVE zone parameters (same interface family as PHI_MORPH)
-	uint16_t phiWeaveZoneA{0};
-	uint16_t phiWeaveZoneB{0};
-	float phiWeavePhaseOffsetA{0.0f};
-	float phiWeavePhaseOffsetB{0.0f};
-	float phiWeaveGamma{0.0f};
-	deluge::dsp::PhiWeaveCache* phiWeaveCache{nullptr};
-
-	// PHI_VOX zone parameters (same interface family)
-	uint16_t phiVoxZoneA{0};
-	uint16_t phiVoxZoneB{0};
-	float phiVoxPhaseOffsetA{0.0f};
-	float phiVoxPhaseOffsetB{0.0f};
-	float phiVoxGamma{0.0f};
-	uint8_t phiVoxTracking{0}; // 0..50: formant frequencies fixed in Hz (0) -> note-relative (50)
-	deluge::dsp::PhiVoxCache* phiVoxCache{nullptr};
-
-	// PHI_SWARM zone parameters (same interface family)
+	// PHI_SWARM zone parameters (same interface family as PHI_MORPH)
 	uint16_t phiSwarmZoneA{0};
 	uint16_t phiSwarmZoneB{0};
 	float phiSwarmPhaseOffsetA{0.0f};
@@ -90,35 +67,19 @@ public:
 	float phiSwarmGamma{0.0f};
 	deluge::dsp::PhiSwarmCache* phiSwarmCache{nullptr};
 
-	// PHI_GENDY zone parameters (same interface family)
-	uint16_t phiGendyZoneA{0};
-	uint16_t phiGendyZoneB{0};
-	float phiGendyPhaseOffsetA{0.0f};
-	float phiGendyPhaseOffsetB{0.0f};
-	float phiGendyGamma{0.0f};
-	deluge::dsp::PhiGendyCache* phiGendyCache{nullptr};
-
-	// PHI_STAIR zone parameters (same interface family)
-	uint16_t phiStairZoneA{0};
-	uint16_t phiStairZoneB{0};
-	float phiStairPhaseOffsetA{0.0f};
-	float phiStairPhaseOffsetB{0.0f};
-	float phiStairGamma{0.0f};
-	deluge::dsp::PhiStairCache* phiStairCache{nullptr};
-
-	// Zone-style stereo knob, shared by the phi family: position WITHIN each
+	// Zone-style stereo knob (PHI_SWARM: slave separation): position WITHIN each
 	// 128-wide zone = stereo amount (every zone starts mono; knob 0 = mono),
-	// zone index = stereo character (per-algorithm phi params)
+	// zone index = stereo character
 	uint16_t phiStereoZone{0};
 
-	[[nodiscard]] bool isPhiFamily() const {
-		return oscType == OscType::PHI_MORPH || oscType == OscType::PHI_STAIR || oscType == OscType::PHI_WEAVE
-		       || oscType == OscType::PHI_VOX || oscType == OscType::PHI_SWARM || oscType == OscType::PHI_GENDY;
-	}
-	// VOX excluded: formant-separation stereo was dropped (and it already
-	// fills all eight horizontal-menu slots with Formant Track)
-	[[nodiscard]] bool phiStereoCapable() const { return isPhiFamily() && oscType != OscType::PHI_VOX; }
+	[[nodiscard]] bool isPhiFamily() const { return oscType == OscType::PHI_MORPH || oscType == OscType::PHI_SWARM; }
+	[[nodiscard]] bool phiStereoCapable() const { return oscType == OscType::PHI_SWARM; } // Morph renders mono
 	[[nodiscard]] bool phiStereoActive() const { return phiStereoCapable() && (phiStereoZone & 127u) != 0; }
+
+	/// Creates the cache of the current phi-family oscillator if it doesn't exist yet. The voices call this from the
+	/// audio render, where an out-of-memory exception would freeze the unit (TERM) - so it returns false instead and
+	/// the voice renders silence for that buffer. True for every other oscillator type.
+	[[nodiscard]] bool ensurePhiCache();
 
 	int8_t timeStretchAmount;
 	bool offsetWraps{true}; // When true, start offset wraps playhead modularly; when false, clamps at boundary
@@ -141,7 +102,6 @@ public:
 	OscType getOscType();
 	void setOscType(OscType newType);
 
-	DxPatch* ensureDxPatch();
 	void cloneFrom(Source* other);
 
 private:

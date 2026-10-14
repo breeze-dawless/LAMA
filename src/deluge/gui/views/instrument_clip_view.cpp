@@ -929,17 +929,10 @@ ActionResult InstrumentClipView::handleScaleButtonAction(bool on, bool inCardRou
 }
 
 bool InstrumentClipView::handleInstrumentChange(OutputType outputType) {
-	bool is_fm = false;
 	bool isMIDIorCV = util::one_of(outputType, {OutputType::MIDI_OUT, OutputType::CV});
 
-	if (outputType == OutputType::SYNTH) {
-		is_fm = Buttons::isButtonPressed(deluge::hid::button::MOD7)
-		        && (runtimeFeatureSettings.get(RuntimeFeatureSettingType::EnableDX7Engine)
-		            == RuntimeFeatureStateToggle::On);
-	}
-
-	if (!isMIDIorCV && (is_fm || Buttons::isShiftButtonPressed())) {
-		return createNewInstrument(outputType, is_fm);
+	if (!isMIDIorCV && Buttons::isShiftButtonPressed()) {
+		return createNewInstrument(outputType);
 	}
 	else {
 		return changeOutputType(outputType);
@@ -1716,8 +1709,8 @@ void InstrumentClipView::doubleClipLengthAction() {
 	}
 }
 
-bool InstrumentClipView::createNewInstrument(OutputType newOutputType, bool is_dx) {
-	if (InstrumentClipMinder::createNewInstrument(newOutputType, is_dx)) {
+bool InstrumentClipView::createNewInstrument(OutputType newOutputType) {
+	if (InstrumentClipMinder::createNewInstrument(newOutputType)) {
 		recalculateColours();
 		uiNeedsRendering(getRootUI());
 

@@ -30,7 +30,7 @@ public:
 	EqMenu(l10n::String newName, std::initializer_list<MenuItem*> newItems) : HorizontalMenu(newName, newItems) {}
 
 	void renderMenuItems(std::span<MenuItem*> items, const MenuItem* currentItem) override {
-		const auto [bass, treble, bass_freq, treble_freq, order_changed] = ensureCorrectItemsOrderAndGetValues();
+		const auto [bass, treble, bass_freq, treble_freq, mid, order_changed] = ensureCorrectItemsOrderAndGetValues();
 		if (order_changed) {
 			renderOLED();
 			return;
@@ -78,10 +78,20 @@ public:
 			treble_y2 = std::lerp(treble_y2, target_y, morph);
 		}
 
+		// Mid has no frequency knob of its own (its band is implicitly whatever's between the
+		// current Bass Frequency and Treble Frequency settings - see doEQ() in
+		// mod_controllable_audio.cpp), so its control point sits at the horizontal midpoint
+		// between the bass and treble crossover corners (center_between is declared just above
+		// for the morph smoothing), reflecting their actual current positions after that
+		// adjustment and morph.
+		const uint8_t mid_x = center_between(bass_x2, treble_x2);
+		const uint8_t mid_y = std::lerp(end_y, end_y - height, mid);
+
 		oled_canvas::Canvas& image = OLED::main;
 		image.drawLine(bass_x0, bass_y1, bass_x1, bass_y1);
 		image.drawLine(bass_x1, bass_y1, bass_x2, bass_y2);
-		image.drawLine(bass_x2, bass_y2, treble_x2, treble_y2);
+		image.drawLine(bass_x2, bass_y2, mid_x, mid_y);
+		image.drawLine(mid_x, mid_y, treble_x2, treble_y2);
 		image.drawLine(treble_x2, treble_y2, treble_x1, treble_y1);
 		image.drawLine(treble_x1, treble_y1, treble_x0, treble_y1);
 
@@ -109,8 +119,9 @@ public:
 		selected_x_ = -1, selected_y_ = -1;
 		drawControlIndicator(center_between(bass_x0, bass_x1), bass_y1, currentItem == items[0]);
 		drawControlIndicator(bass_x2, bass_y2, currentItem == items[1]);
-		drawControlIndicator(treble_x2, treble_y2, currentItem == items[2]);
-		drawControlIndicator(center_between(treble_x1, treble_x0), treble_y1, currentItem == items[3]);
+		drawControlIndicator(mid_x, mid_y, currentItem == items[2]);
+		drawControlIndicator(treble_x2, treble_y2, currentItem == items[3]);
+		drawControlIndicator(center_between(treble_x1, treble_x0), treble_y1, currentItem == items[4]);
 	}
 
 private:
@@ -121,6 +132,7 @@ private:
 		float treble{0.f};
 		float bass_freq{0.f};
 		float treble_freq{0.f};
+		float mid{0.f};
 		bool order_changed{false};
 	};
 
@@ -128,7 +140,7 @@ private:
 		using namespace deluge::modulation;
 
 		const uint8_t current_item_pos = std::distance(items.begin(), current_item_);
-		UnpatchedParam* desired_order_items[4] = {nullptr, nullptr, nullptr, nullptr};
+		UnpatchedParam* desired_order_items[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
 		EqualizerValues result{};
 
 		for (auto* i : items) {
@@ -141,13 +153,17 @@ private:
 				desired_order_items[1] = as_unpatched;
 				result.bass_freq = as_unpatched->getValue() / 50.f;
 				break;
-			case params::UNPATCHED_TREBLE_FREQ:
+			case params::UNPATCHED_MID:
 				desired_order_items[2] = as_unpatched;
+				result.mid = as_unpatched->getValue() / 50.f;
+				break;
+			case params::UNPATCHED_TREBLE_FREQ:
+				desired_order_items[3] = as_unpatched;
 				// Treble boost has no effect on treble freq's values above 32
 				result.treble_freq = std::clamp<int32_t>(as_unpatched->getValue(), 0, 32) / 32.f;
 				break;
 			case params::UNPATCHED_TREBLE:
-				desired_order_items[3] = as_unpatched;
+				desired_order_items[4] = as_unpatched;
 				result.treble = as_unpatched->getValue() / 50.f;
 				break;
 			default:

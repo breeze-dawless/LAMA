@@ -37,7 +37,7 @@ public:
 	InstrumentClipMinder();
 	static void redrawNumericDisplay();
 	virtual void displayOrLanguageChanged();
-	bool createNewInstrument(OutputType newOutputType, bool is_dx = false);
+	bool createNewInstrument(OutputType newOutputType);
 	void setLedStates();
 	virtual void focusRegained();
 	virtual ActionResult buttonAction(deluge::hid::Button b, bool on, bool inCardRoutine);

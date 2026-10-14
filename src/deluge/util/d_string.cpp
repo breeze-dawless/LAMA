@@ -116,7 +116,7 @@ clearAndAllocateNew:
 	}
 
 	{
-		void* newMemory = GeneralMemoryAllocator::get().allocExternal(newLength + 1 + 4);
+		void* newMemory = GeneralMemoryAllocator::get().allocLowSpeed(newLength + 1 + 4);
 		if (!newMemory) {
 			return Error::INSUFFICIENT_RAM;
 		}
@@ -138,9 +138,11 @@ void String::set(String const* otherString) {
 		return;
 	}
 #if ALPHA_OR_BETA_VERSION
-	// if the other string has memory and it's not in the non audio region
+	// if the other string has memory and it's in internal RAM (strings live in SDRAM: external region, or the
+	// stealable region once external is full). getRegion() itself freezes on an address outside every region.
 	if (sm != nullptr) {
-		if (!(EXTERNAL_MEMORY_END - RESERVED_EXTERNAL_ALLOCATOR < (uint32_t)sm && (uint32_t)sm < EXTERNAL_MEMORY_END)) {
+		int32_t region = GeneralMemoryAllocator::get().getRegion(sm);
+		if (region == MEMORY_REGION_INTERNAL || region == MEMORY_REGION_INTERNAL_SMALL) {
 			FREEZE_WITH_ERROR("S001");
 			return;
 		}
@@ -180,7 +182,7 @@ Error String::shorten(int32_t newLength) {
 
 		// If reasons, we have to do a clone
 		if (oldNumReasons > 1) {
-			void* newMemory = GeneralMemoryAllocator::get().allocExternal(newLength + 1 + 4);
+			void* newMemory = GeneralMemoryAllocator::get().allocLowSpeed(newLength + 1 + 4);
 			if (!newMemory) {
 				return Error::INSUFFICIENT_RAM;
 			}
@@ -270,7 +272,7 @@ Error String::concatenateAtPos(char const* newChars, int32_t pos, int32_t newCha
 		// Otherwise, gotta allocate brand new memory
 		else {
 allocateNewMemory:
-			void* newMemory = GeneralMemoryAllocator::get().allocExternal(requiredSize);
+			void* newMemory = GeneralMemoryAllocator::get().allocLowSpeed(requiredSize);
 			if (!newMemory) {
 				return Error::INSUFFICIENT_RAM;
 			}
@@ -314,7 +316,7 @@ Error String::setChar(char newChar, int32_t pos) {
 		int32_t length = getLength();
 
 		int32_t requiredSize = length + 4 + 1;
-		void* newMemory = GeneralMemoryAllocator::get().allocExternal(requiredSize);
+		void* newMemory = GeneralMemoryAllocator::get().allocLowSpeed(requiredSize);
 		if (!newMemory) {
 			return Error::INSUFFICIENT_RAM;
 		}

@@ -19,7 +19,10 @@
 
 #include "definitions_cxx.hpp"
 #include "dsp/filter/filter_set.h"
+#include "dsp/kick_mode.hpp"
+#include "dsp/mono_maker.hpp"
 #include "dsp/sine_shaper.hpp"
+#include "dsp/wavefold.hpp"
 #include "model/voice/voice_sample_playback_guide.h"
 #include "model/voice/voice_unison_part.h"
 #include "modulation/envelope.h"
@@ -75,6 +78,12 @@ public:
 	int32_t portaEnvelopeMaxAmplitude;
 
 	std::array<uint32_t, 2> lastSaturationTanHWorkingValue;
+	std::array<int32_t, 2> lastSaturationToneState;
+	std::array<dsp::MonoMakerState, 2> monoMakerState;
+	std::array<dsp::WavefoldChannelState, 2> wavefoldState;
+	/// Set once Wavefold Symmetry has been non-zero during this note and kept on until the next
+	/// note-on, so an LFO sweeping Symmetry through 0 can't switch the DC blocker on and off.
+	bool wavefoldDcBlockActive = false;
 
 	// Per-voice sine shaper state (DC blocker, feedback, feedback LPF, stereo LFO)
 	deluge::dsp::SineShaperVoiceState sineShaperState;
@@ -95,6 +104,11 @@ public:
 	int32_t overrideAmplitudeEnvelopeReleaseRate;
 
 	bool justCreated{false};
+
+	/// Samples since the note started, for the Kick synth mode's pitch envelopes
+	uint32_t kickSamples{0};
+	/// Kick mode click sample playback position (see ClickSample::render())
+	uint32_t clickPos{0xFFFFFFFF};
 
 	uint32_t getLocalLFOPhaseIncrement(LFO_ID lfoId, deluge::modulation::params::Local param);
 	void setAsUnassigned(ModelStackWithSoundFlags* modelStack, bool deletingSong = false);
@@ -126,9 +140,14 @@ public:
 	/// Returns whether voice should still be left active
 	bool doImmediateRelease();
 
-	bool forceNormalRelease();
+	/// Already fading at (or faster than) the soft-cull rate. Cull victim selection and the voice limit
+	/// must treat such a voice as already gone, or it soaks up culls meant for live voices (issue #4721).
+	[[nodiscard]] bool isCullFading() const {
+		return envelopes[0].state >= EnvelopeStage::FAST_RELEASE
+		       && envelopes[0].fastReleaseIncrement >= SOFT_CULL_INCREMENT;
+	}
 
-	bool speedUpRelease();
+	bool speedUpRelease(uint32_t minFastReleaseIncrement = SOFT_CULL_INCREMENT);
 	bool shouldBeDeleted() { return delete_this_voice_; }
 
 	// This compares based on the priority of two voices
@@ -161,4 +180,16 @@ private:
 	void setupPorta(const Sound& sound);
 	int32_t combineExpressionValues(const Sound& sound, int32_t expressionDimension) const;
 	void applyStartOffsetToGuide(VoiceSamplePlaybackGuide& guide, const Source& source, int32_t startOffsetParam);
+
+	// Kick synth mode (voice_kick_mode.cpp)
+	[[nodiscard]] bool isKickPitchEnvelope(int32_t e) const;
+	[[nodiscard]] int32_t kickPitchEnvelopeOutput(int32_t e, float samplesSinceNoteOn) const;
+	[[nodiscard]] bool isKickPerSampleSource(int32_t s) const;
+	void setUpKickPitchEnvelopes(dsp::kick_mode::PitchEnvelope* envelopes);
+	static float kickPitchMultiplierAt(const dsp::kick_mode::PitchEnvelope* envelopes, float samplesSinceNoteOn);
+	int32_t kickBlockPitchAdjust(int32_t overallPitchAdjust, int32_t numSamples);
+	void renderKickModeSources(ParamManagerForTimeline* paramManager, int32_t* oscBuffer, int32_t numSamples,
+	                           bool stereoBuffer, bool spreadUnison, const int32_t* sourceAmplitudes,
+	                           const int32_t* sourceAmplitudeIncrements, const bool* modulatorsActive,
+	                           int32_t overallPitchAdjust);
 };

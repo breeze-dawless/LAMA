@@ -19,7 +19,6 @@
 
 #include "gui/ui/keyboard/column_controls/chord.h"
 #include "gui/ui/keyboard/column_controls/chord_mem.h"
-#include "gui/ui/keyboard/column_controls/dx.h"
 #include "gui/ui/keyboard/column_controls/mod.h"
 #include "gui/ui/keyboard/column_controls/scale_mode.h"
 #include "gui/ui/keyboard/column_controls/session.h"
@@ -35,7 +34,6 @@ enum ColumnControlFunction : int8_t {
 	SONG_CHORD_MEM,
 	CHORD_MEM,
 	SCALE_MODE,
-	DX,
 	SESSION,
 	// BEAT_REPEAT,
 	COL_CTRL_FUNC_MAX,
@@ -51,7 +49,6 @@ struct ColumnControlState {
 	SongChordMemColumn songChordMemColumn{};
 	ChordMemColumn chordMemColumn{};
 	ScaleModeColumn scaleModeColumn{};
-	DXColumn dxColumn{};
 	SessionColumn sessionColumn{};
 
 	ColumnControlFunction leftColFunc = VELOCITY;

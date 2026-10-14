@@ -811,20 +811,8 @@ char const* oscTypeToString(OscType oscType) {
 	case OscType::PHI_MORPH:
 		return "phiMorph";
 
-	case OscType::PHI_STAIR:
-		return "phiStair";
-
-	case OscType::PHI_WEAVE:
-		return "phiWeave";
-
-	case OscType::PHI_VOX:
-		return "phiVox";
-
 	case OscType::PHI_SWARM:
 		return "phiSwarm";
-
-	case OscType::PHI_GENDY:
-		return "phiGendy";
 
 	case OscType::INPUT_L:
 		return "inLeft";
@@ -834,9 +822,6 @@ char const* oscTypeToString(OscType oscType) {
 
 	case OscType::INPUT_STEREO:
 		return "inStereo";
-
-	case OscType::DX7:
-		return "dx7";
 
 	default:
 		__builtin_unreachable();
@@ -872,20 +857,13 @@ OscType stringToOscType(char const* string) {
 	else if (!strcmp(string, "phiMorph")) {
 		return OscType::PHI_MORPH;
 	}
-	else if (!strcmp(string, "phiWeave")) {
-		return OscType::PHI_WEAVE;
-	}
-	else if (!strcmp(string, "phiVox")) {
-		return OscType::PHI_VOX;
-	}
 	else if (!strcmp(string, "phiSwarm")) {
 		return OscType::PHI_SWARM;
 	}
-	else if (!strcmp(string, "phiGendy")) {
-		return OscType::PHI_GENDY;
-	}
-	else if (!strcmp(string, "phiStair")) {
-		return OscType::PHI_STAIR;
+	// PhiVox, PhiWeave, PhiGendy and PhiStair were removed - songs that used them get the closest relative instead
+	else if (!strcmp(string, "phiVox") || !strcmp(string, "phiWeave") || !strcmp(string, "phiGendy")
+	         || !strcmp(string, "phiStair")) {
+		return OscType::PHI_MORPH;
 	}
 	else if (!strcmp(string, "inLeft")) {
 		return OscType::INPUT_L;
@@ -897,7 +875,10 @@ OscType stringToOscType(char const* string) {
 		return OscType::INPUT_STEREO;
 	}
 	else if (!strcmp(string, "dx7")) {
-		return OscType::DX7;
+		return OscType::SINE; // The DX7 engine is gone
+	}
+	else if (!strcmp(string, "kick")) {
+		return OscType::SINE; // The Kick oscillator type is gone - see Sound::convertLegacyKickOscillators()
 	}
 	else {
 		return OscType::TRIANGLE;
@@ -922,6 +903,8 @@ char const* lfoTypeToString(LFOType oscType) {
 		return "rwalk";
 	case LFOType::WARBLER:
 		return "warbler";
+	case LFOType::CUSTOM:
+		return "custom";
 	default:
 		return "triangle";
 	}
@@ -943,6 +926,9 @@ LFOType stringToLFOType(char const* string) {
 	else if (!strcmp(string, "warbler")) {
 		return LFOType::WARBLER;
 	}
+	else if (!strcmp(string, "custom")) {
+		return LFOType::CUSTOM;
+	}
 	else if (!strcmp(string, "rwalk")) {
 		return LFOType::RANDOM_WALK;
 	}
@@ -956,8 +942,8 @@ char const* synthModeToString(SynthMode synthMode) {
 	case SynthMode::FM:
 		return "fm";
 
-	case SynthMode::RINGMOD:
-		return "ringmod";
+	case SynthMode::KICK:
+		return "kick";
 
 	default:
 		return "subtractive";
@@ -968,8 +954,8 @@ SynthMode stringToSynthMode(char const* string) {
 	if (!strcmp(string, "fm")) {
 		return SynthMode::FM;
 	}
-	else if (!strcmp(string, "ringmod")) {
-		return SynthMode::RINGMOD;
+	else if (!strcmp(string, "kick")) {
+		return SynthMode::KICK;
 	}
 	else {
 		return SynthMode::SUBTRACTIVE;

@@ -70,7 +70,6 @@ FileSelector deluge::gui::menu_item::file0SelectorMenu{STRING_FOR_FILE_BROWSER, 
 osc::PhiMorphZone osc0PhiZoneAMenu{STRING_FOR_PHI_ZONE_A, STRING_FOR_OSC_PHI_ZONE_A_MENU_TITLE, 0, 0};
 osc::source::WaveIndex source0WaveIndexMenu{STRING_FOR_WAVE_INDEX, STRING_FOR_OSC_WAVE_IND_MENU_TITLE, params::LOCAL_OSC_A_WAVE_INDEX, 0};
 osc::PhiMorphZone osc0PhiZoneBMenu{STRING_FOR_PHI_ZONE_B, STRING_FOR_OSC_PHI_ZONE_B_MENU_TITLE, 0, 1};
-osc::PhiVoxTracking osc0VoxTrackingMenu{STRING_FOR_FORMANT_TRACKING, 0};
 osc::PhiStereoZone osc0PhiStereoMenu{STRING_FOR_PHI_STEREO, STRING_FOR_OSC_PHI_STEREO_MENU_TITLE, 0};
 sample::Transpose source0TransposeMenu{STRING_FOR_TRANSPOSE, STRING_FOR_OSC_TRANSPOSE_MENU_TITLE, params::LOCAL_OSC_A_PITCH_ADJUST, 0};
 osc::PulseWidth osc0PulseWidthMenu{STRING_FOR_PULSE_WIDTH, STRING_FOR_OSC_P_WIDTH_MENU_TITLE, params::LOCAL_OSC_A_PHASE_WIDTH, 0};
@@ -85,13 +84,12 @@ sample::Interpolation sample0InterpolationMenu{STRING_FOR_INTERPOLATION, STRING_
 sample::Start sample0StartMenu{STRING_FOR_START_POINT, 0};
 sample::End sample0EndMenu{STRING_FOR_END_POINT, 0};
 sample::StartOffset sample0StartOffsetMenu{STRING_FOR_START_OFFSET, 0};
-std::array<MenuItem*, 20> child6 = {
+std::array<MenuItem*, 19> child6 = {
     &osc0TypeMenu,
     &deluge::gui::menu_item::file0SelectorMenu,
     &osc0PhiZoneAMenu,
     &source0WaveIndexMenu,
     &osc0PhiZoneBMenu,
-    &osc0VoxTrackingMenu,
     &osc0PhiStereoMenu,
     &source0TransposeMenu,
     &osc0PulseWidthMenu,
@@ -113,7 +111,6 @@ FileSelector deluge::gui::menu_item::file1SelectorMenu{STRING_FOR_FILE_BROWSER, 
 osc::PhiMorphZone osc1PhiZoneAMenu{STRING_FOR_PHI_ZONE_A, STRING_FOR_OSC_PHI_ZONE_A_MENU_TITLE, 1, 0};
 osc::source::WaveIndex source1WaveIndexMenu{STRING_FOR_WAVE_INDEX, STRING_FOR_OSC_WAVE_IND_MENU_TITLE, params::LOCAL_OSC_A_WAVE_INDEX, 1};
 osc::PhiMorphZone osc1PhiZoneBMenu{STRING_FOR_PHI_ZONE_B, STRING_FOR_OSC_PHI_ZONE_B_MENU_TITLE, 1, 1};
-osc::PhiVoxTracking osc1VoxTrackingMenu{STRING_FOR_FORMANT_TRACKING, 1};
 osc::PhiStereoZone osc1PhiStereoMenu{STRING_FOR_PHI_STEREO, STRING_FOR_OSC_PHI_STEREO_MENU_TITLE, 1};
 sample::Transpose source1TransposeMenu{STRING_FOR_TRANSPOSE, STRING_FOR_OSC_TRANSPOSE_MENU_TITLE, params::LOCAL_OSC_A_PITCH_ADJUST, 1};
 osc::PulseWidth osc1PulseWidthMenu{STRING_FOR_PULSE_WIDTH, STRING_FOR_OSC_P_WIDTH_MENU_TITLE, params::LOCAL_OSC_A_PHASE_WIDTH, 1};
@@ -128,13 +125,12 @@ sample::Interpolation sample1InterpolationMenu{STRING_FOR_INTERPOLATION, STRING_
 sample::Start sample1StartMenu{STRING_FOR_START_POINT, 1};
 sample::End sample1EndMenu{STRING_FOR_END_POINT, 1};
 sample::StartOffset sample1StartOffsetMenu{STRING_FOR_START_OFFSET, 1};
-std::array<MenuItem*, 20> child7 = {
+std::array<MenuItem*, 19> child7 = {
     &osc1TypeMenu,
     &deluge::gui::menu_item::file1SelectorMenu,
     &osc1PhiZoneAMenu,
     &source1WaveIndexMenu,
     &osc1PhiZoneBMenu,
-    &osc1VoxTrackingMenu,
     &osc1PhiStereoMenu,
     &source1TransposeMenu,
     &osc1PulseWidthMenu,
@@ -176,13 +172,15 @@ osc::source::Volume source1VolumeMenu{STRING_FOR_OSC_LEVEL_MENU_TITLE, params::L
 source::patched_param::ModulatorLevel modulator0Volume{STRING_FOR_FM_MOD_LEVEL_MENU_TITLE, params::LOCAL_MODULATOR_0_VOLUME, 0};
 source::patched_param::ModulatorLevel modulator1Volume{STRING_FOR_FM_MOD_LEVEL_MENU_TITLE, params::LOCAL_MODULATOR_0_VOLUME, 1};
 patched_param::IntegerNonFM noiseMenu{STRING_FOR_NOISE_LEVEL, params::LOCAL_NOISE_VOLUME};
+osc::ClickSampleBrowse clickSampleMenu{STRING_FOR_CLICK_SAMPLE};
 osc::Sync oscSyncMenu{STRING_FOR_OSCILLATOR_SYNC};
-std::array<MenuItem*, 6> child10 = {
+std::array<MenuItem*, 7> child10 = {
     &source0VolumeMenu,
     &source1VolumeMenu,
     &modulator0Volume,
     &modulator1Volume,
     &noiseMenu,
+    &clickSampleMenu,
     &oscSyncMenu,
 };
 HorizontalMenu oscMixerMenu{STRING_FOR_OSCILLATOR_MIXER, child10};
@@ -212,56 +210,76 @@ envelope::Segment env3AttackMenu{STRING_FOR_ATTACK, STRING_FOR_ENV_ATTACK_MENU_T
 envelope::Segment env3DecayMenu{STRING_FOR_DECAY, STRING_FOR_ENV_DECAY_MENU_TITLE, params::LOCAL_ENV_0_DECAY, 2};
 envelope::Segment env3SustainMenu{STRING_FOR_SUSTAIN, STRING_FOR_ENV_SUSTAIN_MENU_TITLE, params::LOCAL_ENV_0_SUSTAIN, 2};
 envelope::Segment env3ReleaseMenu{STRING_FOR_RELEASE, STRING_FOR_ENV_RELEASE_MENU_TITLE, params::LOCAL_ENV_0_RELEASE, 2};
-std::array<MenuItem*, 4> child13 = {
+envelope::kick_pitch::Amount env3KickPitchAmountMenu{STRING_FOR_PITCH, STRING_FOR_ENV_PITCH_MENU_TITLE, 2};
+envelope::kick_pitch::Time env3KickPitchTimeMenu{STRING_FOR_TIME, STRING_FOR_ENV_TIME_MENU_TITLE, 2};
+envelope::kick_pitch::Curve env3KickPitchCurveMenu{STRING_FOR_CURVE, STRING_FOR_ENV_CURVE_MENU_TITLE, 2};
+std::array<MenuItem*, 7> child13 = {
     &env3AttackMenu,
     &env3DecayMenu,
     &env3SustainMenu,
     &env3ReleaseMenu,
+    &env3KickPitchAmountMenu,
+    &env3KickPitchTimeMenu,
+    &env3KickPitchCurveMenu,
 };
 envelope::EnvelopeMenu env3Menu{STRING_FOR_ENVELOPE_MENU_TITLE, child13, 2};
 envelope::Segment env4AttackMenu{STRING_FOR_ATTACK, STRING_FOR_ENV_ATTACK_MENU_TITLE, params::LOCAL_ENV_0_ATTACK, 3};
 envelope::Segment env4DecayMenu{STRING_FOR_DECAY, STRING_FOR_ENV_DECAY_MENU_TITLE, params::LOCAL_ENV_0_DECAY, 3};
 envelope::Segment env4SustainMenu{STRING_FOR_SUSTAIN, STRING_FOR_ENV_SUSTAIN_MENU_TITLE, params::LOCAL_ENV_0_SUSTAIN, 3};
 envelope::Segment env4ReleaseMenu{STRING_FOR_RELEASE, STRING_FOR_ENV_RELEASE_MENU_TITLE, params::LOCAL_ENV_0_RELEASE, 3};
-std::array<MenuItem*, 4> child14 = {
+envelope::kick_pitch::Amount env4KickPitchAmountMenu{STRING_FOR_PITCH, STRING_FOR_ENV_PITCH_MENU_TITLE, 3};
+envelope::kick_pitch::Time env4KickPitchTimeMenu{STRING_FOR_TIME, STRING_FOR_ENV_TIME_MENU_TITLE, 3};
+envelope::kick_pitch::Curve env4KickPitchCurveMenu{STRING_FOR_CURVE, STRING_FOR_ENV_CURVE_MENU_TITLE, 3};
+std::array<MenuItem*, 7> child14 = {
     &env4AttackMenu,
     &env4DecayMenu,
     &env4SustainMenu,
     &env4ReleaseMenu,
+    &env4KickPitchAmountMenu,
+    &env4KickPitchTimeMenu,
+    &env4KickPitchCurveMenu,
 };
 envelope::EnvelopeMenu env4Menu{STRING_FOR_ENVELOPE_MENU_TITLE, child14, 3};
 lfo::Type lfo1TypeMenu{STRING_FOR_SHAPE, STRING_FOR_LFO_TYPE, LFO1_ID};
+lfo::ShapeEditor lfo1ShapeEditorMenu{STRING_FOR_LFO_DRAW, LFO1_ID};
 lfo::Sync lfo1SyncMenu{STRING_FOR_SYNC, STRING_FOR_LFO_SYNC, LFO1_ID};
 patched_param::Integer lfo1RateMenu{STRING_FOR_RATE, STRING_FOR_LFO1_RATE, params::GLOBAL_LFO_FREQ_1};
-std::array<MenuItem*, 3> child15 = {
+std::array<MenuItem*, 4> child15 = {
     &lfo1TypeMenu,
+    &lfo1ShapeEditorMenu,
     &lfo1SyncMenu,
     &lfo1RateMenu,
 };
 HorizontalMenu lfo1Menu{STRING_FOR_LFO1, child15};
 lfo::Type lfo2TypeMenu{STRING_FOR_SHAPE, STRING_FOR_LFO_TYPE, LFO2_ID};
+lfo::ShapeEditor lfo2ShapeEditorMenu{STRING_FOR_LFO_DRAW, LFO2_ID};
 lfo::Sync lfo2SyncMenu{STRING_FOR_SYNC, STRING_FOR_LFO_SYNC, LFO2_ID};
 patched_param::Integer lfo2RateMenu{STRING_FOR_RATE, STRING_FOR_LFO2_RATE, params::LOCAL_LFO_LOCAL_FREQ_1};
-std::array<MenuItem*, 3> child16 = {
+std::array<MenuItem*, 4> child16 = {
     &lfo2TypeMenu,
+    &lfo2ShapeEditorMenu,
     &lfo2SyncMenu,
     &lfo2RateMenu,
 };
 HorizontalMenu lfo2Menu{STRING_FOR_LFO2, child16};
 lfo::Type lfo3TypeMenu{STRING_FOR_SHAPE, STRING_FOR_LFO_TYPE, LFO3_ID};
+lfo::ShapeEditor lfo3ShapeEditorMenu{STRING_FOR_LFO_DRAW, LFO3_ID};
 lfo::Sync lfo3SyncMenu{STRING_FOR_SYNC, STRING_FOR_LFO_SYNC, LFO3_ID};
 patched_param::Integer lfo3RateMenu{STRING_FOR_RATE, STRING_FOR_LFO3_RATE, params::GLOBAL_LFO_FREQ_2};
-std::array<MenuItem*, 3> child17 = {
+std::array<MenuItem*, 4> child17 = {
     &lfo3TypeMenu,
+    &lfo3ShapeEditorMenu,
     &lfo3SyncMenu,
     &lfo3RateMenu,
 };
 HorizontalMenu lfo3Menu{STRING_FOR_LFO3, child17};
 lfo::Type lfo4TypeMenu{STRING_FOR_SHAPE, STRING_FOR_LFO_TYPE, LFO4_ID};
+lfo::ShapeEditor lfo4ShapeEditorMenu{STRING_FOR_LFO_DRAW, LFO4_ID};
 lfo::Sync lfo4SyncMenu{STRING_FOR_SYNC, STRING_FOR_LFO_SYNC, LFO4_ID};
 patched_param::Integer lfo4RateMenu{STRING_FOR_RATE, STRING_FOR_LFO4_RATE, params::LOCAL_LFO_LOCAL_FREQ_2};
-std::array<MenuItem*, 3> child18 = {
+std::array<MenuItem*, 4> child18 = {
     &lfo4TypeMenu,
+    &lfo4ShapeEditorMenu,
     &lfo4SyncMenu,
     &lfo4RateMenu,
 };

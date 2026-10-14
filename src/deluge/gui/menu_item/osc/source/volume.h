@@ -29,11 +29,6 @@ public:
 	[[nodiscard]] std::string_view getName() const override { return FormattedTitle::title(); }
 	[[nodiscard]] std::string_view getTitle() const override { return FormattedTitle::title(); }
 
-	bool isRelevant(ModControllableAudio* modControllable, int32_t whichThing) override {
-		Sound* sound = static_cast<Sound*>(modControllable);
-		return (sound->getSynthMode() != SynthMode::RINGMOD);
-	}
-
 	[[nodiscard]] RenderingStyle getRenderingStyle() const override { return BAR; }
 
 	void getColumnLabel(StringBuf& label) override {

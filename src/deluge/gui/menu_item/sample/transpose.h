@@ -18,12 +18,15 @@
 #include "gui/menu_item/formatted_title.h"
 #include "gui/menu_item/source/transpose.h"
 #include "gui/ui/sound_editor.h"
+#include "hid/display/oled.h"
 #include "model/instrument/kit.h"
 #include "model/model_stack.h"
 #include "model/song/song.h"
 #include "processing/sound/sound.h"
 #include "processing/sound/sound_drum.h"
 #include "storage/multi_range/multisample_range.h"
+#include <algorithm>
+#include <cmath>
 
 // NOTE: This is actually the Oscillator transpose!
 
@@ -145,7 +148,47 @@ public:
 		return true;
 	}
 
+	// Kick synth mode: this is the oscillator's Tune, shown as the note and frequency it lands on at the reference note
+	// (the note a kit row plays)
+	[[nodiscard]] std::string_view getName() const override {
+		return isKick() ? l10n::getView(l10n::String::STRING_FOR_KICK_TUNE) : MenuItem::getName();
+	}
+
+	void getColumnLabel(StringBuf& label) override {
+		if (!isKick()) {
+			return MenuItem::getColumnLabel(label);
+		}
+		// Short enough to fit under the note name: 43.7 below 100 Hz, whole Hz above
+		const float hz = kickHz();
+		if (hz < 100.0f) {
+			label.appendFloat(hz, 1, 1);
+		}
+		else {
+			label.appendInt(static_cast<int32_t>(hz + 0.5f));
+		}
+	}
+
+	void renderInHorizontalMenu(const SlotPosition& slot) override {
+		if (!isKick()) {
+			return Decimal::renderInHorizontalMenu(slot);
+		}
+		char noteName[8];
+		noteCodeToString(kickNoteRounded(), noteName);
+		hid::display::OLED::main.drawStringCentered(noteName, slot.start_x, slot.start_y + kHorizontalMenuSlotYOffset,
+		                                            kTextTitleSpacingX, kTextTitleSizeY, slot.width);
+	}
+
 	void getNotificationValue(StringBuf& valueBuf) override {
+		if (isKick()) {
+			char noteName[8];
+			noteCodeToString(kickNoteRounded(), noteName);
+			valueBuf.append(noteName);
+			valueBuf.append(" ");
+			valueBuf.appendFloat(kickHz(), 1, 1);
+			valueBuf.append(" Hz");
+			return;
+		}
+
 		Decimal::getNotificationValue(valueBuf);
 
 		Source& source = soundEditor.currentSound->sources[source_id_];
@@ -181,5 +224,20 @@ public:
 
 		valueBuf.append(")");
 	}
+
+private:
+	[[nodiscard]] bool isKick() const {
+		return soundEditor.currentSound != nullptr && soundEditor.currentSound->getSynthMode() == SynthMode::KICK
+		       && soundEditor.currentSound->sources[source_id_].oscType != OscType::SAMPLE;
+	}
+	/// The oscillator's pitch at the reference note, as a (fractional) note number
+	[[nodiscard]] float kickNote() {
+		return static_cast<float>(kNoteForDrum + soundEditor.currentSound->transpose)
+		       + static_cast<float>(getValue()) / 100.0f;
+	}
+	[[nodiscard]] int32_t kickNoteRounded() {
+		return std::max(static_cast<int32_t>(std::floor(kickNote() + 0.5f)), int32_t{0});
+	}
+	[[nodiscard]] float kickHz() { return 440.0f * std::exp2((kickNote() - 69.0f) / 12.0f); }
 };
 } // namespace deluge::gui::menu_item::sample

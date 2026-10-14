@@ -59,7 +59,7 @@ public:
 
 	bool isRelevant(ModControllableAudio* modControllable, int32_t) override {
 		const auto sound = static_cast<Sound*>(modControllable);
-		return sound->getSynthMode() == SynthMode::SUBTRACTIVE;
+		return sound->hasSubtractiveOscillators();
 	}
 
 	MenuPermission checkPermissionToBeginSession(ModControllableAudio* modControllable, int32_t,

@@ -1,0 +1,136 @@
+/*
+ * Copyright © 2026 Synthstrom Audible Limited
+ *
+ * This file is part of The Synthstrom Audible Deluge Firmware.
+ *
+ * The Synthstrom Audible Deluge Firmware is free software: you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software Foundation,
+ * either version 3 of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+ * without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along with this program.
+ * If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include "gui/ui/ui.h"
+#include "hid/button.h"
+#include "modulation/lfo_shape.h"
+
+class Sound;
+
+/// Full-screen editor for a custom LFO shape (LFOType::CUSTOM): points joined by segments that can be bent, Serum
+/// style. One point is always selected.
+///
+/// - Pads: set a point in that column at that height (a point already in the column gets the height), shift + pad
+///   removes the points in the column. The pads show the visible part of the cycle.
+/// - X encoder: moves the selected point in time. Pressed: zooms in / out (x1, x2, x4, x8).
+/// - Y encoder: selects the previous / next point. Pressed: to the right splits the visible part into ever more equal
+///   parts (2, 4, 8, 16) by adding points along the shape, to the left takes the finest split back out.
+///   Shift + press: loads the next preset shape.
+/// - Upper gold knob: the selected point's height. Press: deletes the selected point.
+/// - Lower gold knob: bends the segment after the selected point. Pressed: bends the segment before it.
+/// - Synth / Kit: previous point, MIDI / CV: next point. With shift: the previous / next page while zoomed in.
+/// - Select encoder: selects points, like the Y encoder. Sidebar pads: jump to a page.
+/// - Back (as printed on it): undo, shift + back: redo. Turning a knob on and on is one step.
+/// - Select press, or holding back: closes the editor. Back closes it too once there's nothing left to undo.
+class LFOShapeEditor final : public UI {
+public:
+	LFOShapeEditor() { oledShowsUIUnderneath = false; }
+
+	/// Opens the editor on one LFO of a sound. The LFO must be CUSTOM (so its shape exists).
+	bool openFor(Sound* sound, uint8_t lfoId);
+
+	bool opened() override;
+	void focusRegained() override;
+	ActionResult buttonAction(deluge::hid::Button b, bool on, bool inCardRoutine) override;
+	ActionResult padAction(int32_t x, int32_t y, int32_t velocity) override;
+	ActionResult horizontalEncoderAction(int32_t offset) override;
+	ActionResult verticalEncoderAction(int32_t offset, bool inCardRoutine) override;
+	void selectEncoderAction(int8_t offset) override;
+	void modEncoderAction(int32_t whichModEncoder, int32_t offset) override;
+	void modEncoderButtonAction(uint8_t whichModEncoder, bool on) override;
+	void modButtonAction(uint8_t whichButton, bool on) override {} // The mod buttons do nothing here
+	ActionResult exitUI() override;                                // Holding back
+	bool renderMainPads(uint32_t whichRows, RGB image[][kDisplayWidth + kSideBarWidth],
+	                    uint8_t occupancyMask[][kDisplayWidth + kSideBarWidth], bool drawUndefinedArea) override;
+	bool renderSidebar(uint32_t whichRows, RGB image[][kDisplayWidth + kSideBarWidth],
+	                   uint8_t occupancyMask[][kDisplayWidth + kSideBarWidth]) override;
+	void renderOLED(deluge::hid::display::oled_canvas::Canvas& canvas) override;
+	UIType getUIType() override { return UIType::LFO_SHAPE_EDITOR; }
+
+	/// Draws a whole shape into a rectangle (also used for the menu's small preview)
+	static void drawShape(deluge::hid::display::oled_canvas::Canvas& canvas, const deluge::modulation::LFOShape& shape,
+	                      int32_t minX, int32_t minY, int32_t maxX, int32_t maxY);
+
+private:
+	static constexpr int32_t kMaxZoomLevel = 3;  ///< x8
+	static constexpr int32_t kMaxSplitLevel = 4; ///< 16 parts per page - one per pad column
+
+	/// What an edit was, so that turning the same knob on and on makes one undo step
+	enum class Edit : uint8_t { NONE, VALUE, MOVE, BEND_AFTER, BEND_BEFORE, OTHER };
+
+	/// Undo history: the shape after every step (and the point selected then), for this editor session. It lives in
+	/// the general allocator while the editor is open - not in internal RAM.
+	struct State {
+		deluge::modulation::LFOShape shape;
+		int32_t selected;
+	};
+	static constexpr int32_t kHistorySize = 25; ///< States: 24 steps back
+
+	Sound* sound_{nullptr};
+	uint8_t lfoId_{0};
+	int32_t selected_{0};
+	int32_t zoomLevel_{0};
+	int32_t page_{0};
+	int32_t nextPreset_{0};
+
+	State* history_{nullptr};
+	int32_t historyCount_{0};
+	int32_t historyCursor_{0}; ///< The state shown
+	Edit lastEdit_{Edit::NONE};
+	int32_t lastEditPoint_{-1};
+	uint32_t lastEditTime_{0};
+	bool backPressed_{false}; ///< Back went down in here: its release undoes / redoes (holding it closes instead)
+
+	void startHistory();
+	void releaseHistory();
+	void beginEdit(Edit edit); ///< Before changing the shape: starts a new undo step unless it carries on the last
+	void commitEdit();         ///< After changing it: records the result
+	void endGesture() { lastEdit_ = Edit::NONE; }
+	void undo();
+	void redo();
+	void restore(const State& state);
+	void closeEditor();
+
+	deluge::modulation::LFOShape* shape();
+	[[nodiscard]] int32_t numPages() const { return 1 << zoomLevel_; }
+	[[nodiscard]] uint32_t pageWidth() const { return 65536u >> zoomLevel_; }
+	[[nodiscard]] uint32_t pageStart() const { return static_cast<uint32_t>(page_) * pageWidth(); }
+	[[nodiscard]] uint32_t columnWidth() const { return pageWidth() / kDisplayWidth; }
+
+	void select(int32_t index);     ///< Selects a point and shows its page
+	void selectAt(uint32_t x);      ///< Selects the point at x, or the last one before it
+	void selectStep(int32_t steps); ///< Previous / next point, wrapping round the cycle
+	void showPage(int32_t page);    ///< Turns to a page and selects its first point (if it has one)
+	void zoom(int32_t direction);
+	void split(int32_t direction);
+	[[nodiscard]] bool splitComplete(int32_t level);
+	void moveSelected(int32_t offset);
+	void changeValue(int32_t offset);
+	void bend(int32_t offset, bool segmentBefore);
+	void deleteSelected();
+	void loadNextPreset();
+
+	void changed(); ///< Redraws everything after an edit
+	void popupPoint();
+	void popupValue();
+	void popupPosition();
+	void popupPage();
+};
+
+extern LFOShapeEditor lfoShapeEditor;

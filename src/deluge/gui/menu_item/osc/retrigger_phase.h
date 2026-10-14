@@ -91,7 +91,7 @@ public:
 		const auto sound = static_cast<Sound*>(modControllable);
 		Source& source = sound->sources[source_id_];
 
-		if (for_modulator_ && sound->getSynthMode() != SynthMode::FM) {
+		if (for_modulator_ && !sound->usesModulators()) {
 			return false;
 		}
 		if (source.oscType == OscType::WAVETABLE) {

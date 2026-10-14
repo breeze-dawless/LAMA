@@ -77,6 +77,13 @@ struct TableShaperState {
 	int32_t slewedL{0}; // L channel slew-limited output
 	int32_t slewedR{0}; // R channel slew-limited output
 
+	// Tone: clean-lowend split (see shaperCleanLowEnd() in dsp/shaper_buffer.h) - a plain field
+	// like shapeX/shapeY rather than a patched param, since it's a sound-design "set and forget"
+	// crossover point rather than something worth modulating in real time.
+	uint8_t tone{0};          // Crossover point (0-50, 0 = whole signal reaches the shaper)
+	int32_t toneLowStateL{0}; // One-pole lowpass state for the clean-lowend split, L/mono channel
+	int32_t toneLowStateR{0}; // One-pole lowpass state for the clean-lowend split, R channel
+
 	/// Check if effect is enabled (non-zero X)
 	/// Note: mix is now a patched param (LOCAL_TABLE_SHAPER_MIX), checked separately at render time
 	[[nodiscard]] bool isEnabled() const { return shapeX > 0; }
@@ -114,6 +121,8 @@ struct TableShaperState {
 		subSignR = 1;
 		slewedL = 0;
 		slewedR = 0;
+		toneLowStateL = 0;
+		toneLowStateR = 0;
 	}
 
 	/// Write shaper state to file (only non-default values)
@@ -128,6 +137,7 @@ struct TableShaperState {
 		// Secret params (push+twist modifiers)
 		WRITE_FIELD(writer, extrasMask, "tableShaperExtras");
 		WRITE_FLOAT(writer, oscHarmonicWeight, "tableShaperHarmonic", 100.0f);
+		WRITE_FIELD(writer, tone, "tableShaperTone");
 	}
 
 	/// Read a tag into shaper state, returns true if tag was handled
@@ -143,6 +153,7 @@ struct TableShaperState {
 		// Secret params (push+twist modifiers)
 		READ_FIELD(reader, tagName, extrasMask, "tableShaperExtras");
 		READ_FLOAT(reader, tagName, oscHarmonicWeight, "tableShaperHarmonic", 100.0f);
+		READ_FIELD(reader, tagName, tone, "tableShaperTone");
 		return false;
 	}
 };

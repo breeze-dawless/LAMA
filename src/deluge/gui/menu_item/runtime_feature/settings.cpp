@@ -40,7 +40,6 @@ SettingToggle menuHighlightIncomingNotes(RuntimeFeatureSettingType::HighlightInc
 SettingToggle menuDisplayNornsLayout(RuntimeFeatureSettingType::DisplayNornsLayout);
 ShiftIsSticky menuShiftIsSticky{};
 SettingToggle menuLightShiftLed(RuntimeFeatureSettingType::LightShiftLed);
-SettingToggle menuEnableDX7Engine(RuntimeFeatureSettingType::EnableDX7Engine);
 EmulatedDisplay menuEmulatedDisplay{};
 SettingToggle menuEnableKeyboardViewSidebarMenuExit(RuntimeFeatureSettingType::EnableKeyboardViewSidebarMenuExit);
 SettingToggle menuEnableLaunchEventPlayhead(RuntimeFeatureSettingType::EnableLaunchEventPlayhead);
@@ -70,7 +69,6 @@ std::array<MenuItem*, kNumTopLevelEntries> subMenuEntries{&menuDrumRandomizer,
                                                           &menuDisplayNornsLayout,
                                                           &menuShiftIsSticky,
                                                           &menuLightShiftLed,
-                                                          &menuEnableDX7Engine,
                                                           &menuEmulatedDisplay,
                                                           &menuEnableKeyboardViewSidebarMenuExit,
                                                           &menuEnableLaunchEventPlayhead,

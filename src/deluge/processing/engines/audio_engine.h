@@ -84,7 +84,7 @@ class Reverb;
  * is to occur on the Deluge’s sequencer.
  *
  * The window length has strictly speaking no effect on the output or quality of oscillators
- * (including sync, FM, ringmod and wavetable), filters, most effects, sample playback, or timings/jitter
+ * (including sync, FM and wavetable), filters, most effects, sample playback, or timings/jitter
  * from the Deluge’s sequencer. Where it primarily does have a (barely audible) effect is on envelope shapes.
  * The current “stage” of the envelope (i.e. A, D, S or R) is only recalculated at the beginning of each window,
  * so the minimum attack, decay or release time is the length of that window, *unless* that parameter

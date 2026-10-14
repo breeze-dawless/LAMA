@@ -101,6 +101,7 @@ public:
 	bool isSRREnabled(ParamManager* paramManager);
 	bool hasBassAdjusted(ParamManager* paramManager);
 	bool hasTrebleAdjusted(ParamManager* paramManager);
+	bool hasMidAdjusted(ParamManager* paramManager);
 	ModelStackWithAutoParam* getParamFromMIDIKnob(MIDIKnob& knob, ModelStackWithThreeMainThings* modelStack) override;
 
 	/// Get last played note code for pitch tracking (override in Sound)
@@ -121,7 +122,19 @@ public:
 	StutterConfig stutterConfig;
 
 	bool sampleRateReductionOnLastTime;
-	uint8_t clippingAmount; // Song probably doesn't currently use this?
+	uint8_t clippingAmount;     // Song probably doesn't currently use this?
+	uint8_t clippingTweak = 25; // 0-50, Tanh Asymmetry amount
+	uint8_t clippingMix = 50;   // 0-50 dry/wet, 50 = fully wet (matches pre-existing behaviour)
+	uint8_t clippingTone = 0;   // 0-50, pre-saturation clean-lowend crossover amount, 0 = bypassed
+	uint8_t foldTone = 0;       // 0-50, clean-lowend crossover before the wavefolder (Sound only), 0 = bypassed
+
+	/// 0-50, how much to narrow stereo width below subBassMonoFreq towards mono, 0 = bypassed.
+	/// Read by both Sound/Synth's per-voice render (voice.cpp) and GlobalEffectableForClip's
+	/// render (Kit/AudioClip, including Audio track input monitoring) - not by Song/Master.
+	uint8_t subBassMonoAmount = 0;
+	/// 0-50, maps to ~40Hz-500Hz (see dsp/mono_maker.hpp) - where the above narrowing crosses
+	/// over. 22 (~120Hz) is this feature's original fixed crossover, kept as the default.
+	uint8_t subBassMonoFreq = 22;
 
 	// Table Shaper with X/Y shape control
 	deluge::dsp::TableShaper shaperDsp;   // DSP processor with lookup table
@@ -210,7 +223,8 @@ protected:
 	void disableGrain();
 
 private:
-	void doEQ(bool doBass, bool doTreble, int32_t* inputL, int32_t* inputR, int32_t bassAmount, int32_t trebleAmount);
+	void doEQ(bool doBass, bool doTreble, bool doMid, int32_t* inputL, int32_t* inputR, int32_t bassAmount,
+	          int32_t trebleAmount, int32_t midAmount);
 	ModelStackWithThreeMainThings* addNoteRowIndexAndStuff(ModelStackWithTimelineCounter* modelStack,
 	                                                       int32_t noteRowIndex);
 	void switchHPFModeWithOff();

@@ -19,6 +19,15 @@ noise = Menu(
     name="STRING_FOR_NOISE_LEVEL",
 )
 
+click = Menu(
+    "osc::ClickSampleBrowse",
+    "clickSampleMenu",
+    ["{name}"],
+    "oscillator/click_sample.md",
+    name="STRING_FOR_CLICK_SAMPLE",
+    available_when="The synth mode is Kick",
+)
+
 byOsc = {}
 volumes = []
 
@@ -46,7 +55,7 @@ for i in range(2):
             "oscillator/phi_morph_zone.md",
             name="STRING_FOR_PHI_ZONE_A",
             title="STRING_FOR_OSC_PHI_ZONE_A_MENU_TITLE",
-            available_when="Oscillator type must be a phi-family oscillator (the zone selects a waveform, staircase architecture, physics terrain, voice character, synchronization regime, or stochastic terrain)",
+            available_when="Oscillator type must be a phi-family oscillator (the zone selects a waveform or a synchronization regime)",
         ),
         Menu(
             "osc::source::WaveIndex",
@@ -64,15 +73,7 @@ for i in range(2):
             "oscillator/phi_morph_zone.md",
             name="STRING_FOR_PHI_ZONE_B",
             title="STRING_FOR_OSC_PHI_ZONE_B_MENU_TITLE",
-            available_when="Oscillator type must be a phi-family oscillator (the zone selects a waveform, staircase architecture, physics terrain, voice character, synchronization regime, or stochastic terrain)",
-        ),
-        Menu(
-            "osc::PhiVoxTracking",
-            f"osc{i}VoxTrackingMenu",
-            ["{name}", f"{i}"],
-            "oscillator/phi_vox_tracking.md",
-            name="STRING_FOR_FORMANT_TRACKING",
-            available_when="Oscillator type must be PhiVox",
+            available_when="Oscillator type must be a phi-family oscillator (the zone selects a waveform or a synchronization regime)",
         ),
         Menu(
             "osc::PhiStereoZone",
@@ -81,7 +82,7 @@ for i in range(2):
             "oscillator/phi_stereo_zone.md",
             name="STRING_FOR_PHI_STEREO",
             title="STRING_FOR_OSC_PHI_STEREO_MENU_TITLE",
-            available_when="Oscillator type must be a phi-family oscillator (PhiMorph/PhiStair/PhiWeave/PhiVox/PhiSwarm/PhiGendy)",
+            available_when="Oscillator type must be a phi-family oscillator (PhiMorph/PhiSwarm)",
         ),
         Menu(
             "sample::Transpose",
@@ -204,6 +205,5 @@ for i in range(2):
             ["{title}", "params::LOCAL_OSC_A_VOLUME", f"{i}"],
             "oscillator/volume.md",
             title="STRING_FOR_OSC_LEVEL_MENU_TITLE",
-            available_when='Oscillator type must not be <string-for name="STRING_FOR_RINGMOD">RINGMOD</string-for>',
         )
     )

@@ -44,18 +44,14 @@ public:
 	}
 
 	void selectEncoderAction(int32_t offset) override {
-		// Push+twist: adjust gamma (shared phase multiplier) for PHI_MORPH / PHI_WEAVE
+		// Push+twist: adjust gamma (shared phase multiplier) for PHI_MORPH / PHI_SWARM
 		OscType gammaOscType = soundEditor.currentSound->sources[source_id_].oscType;
 		if (Buttons::isButtonPressed(hid::button::SELECT_ENC)
 		    && soundEditor.currentSound->sources[source_id_].isPhiFamily()) {
 			Buttons::selectButtonPressUsedUp = true;
-			float& gamma =
-			    (gammaOscType == OscType::PHI_WEAVE)   ? soundEditor.currentSound->sources[source_id_].phiWeaveGamma
-			    : (gammaOscType == OscType::PHI_VOX)   ? soundEditor.currentSound->sources[source_id_].phiVoxGamma
-			    : (gammaOscType == OscType::PHI_SWARM) ? soundEditor.currentSound->sources[source_id_].phiSwarmGamma
-			    : (gammaOscType == OscType::PHI_GENDY) ? soundEditor.currentSound->sources[source_id_].phiGendyGamma
-			    : (gammaOscType == OscType::PHI_STAIR) ? soundEditor.currentSound->sources[source_id_].phiStairGamma
-			                                           : soundEditor.currentSound->sources[source_id_].phiMorphGamma;
+			float& gamma = (gammaOscType == OscType::PHI_SWARM)
+			                   ? soundEditor.currentSound->sources[source_id_].phiSwarmGamma
+			                   : soundEditor.currentSound->sources[source_id_].phiMorphGamma;
 			gamma = std::max(0.0f, gamma + static_cast<float>(offset));
 			char buffer[16];
 			snprintf(buffer, sizeof(buffer), "G:%d", static_cast<int32_t>(gamma));

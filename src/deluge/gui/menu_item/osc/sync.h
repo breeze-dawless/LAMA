@@ -41,7 +41,8 @@ public:
 				if (thisDrum->type == DrumType::SOUND) {
 					auto* soundDrum = static_cast<SoundDrum*>(thisDrum);
 					// Note: we need to apply the same filtering as stated in the isRelevant() function
-					if (soundDrum->synthMode != SynthMode::FM && soundDrum->sources[0].oscType != OscType::SAMPLE
+					if (soundDrum->synthMode != SynthMode::FM && soundDrum->synthMode != SynthMode::KICK
+					    && soundDrum->sources[0].oscType != OscType::SAMPLE
 					    && soundDrum->sources[1].oscType != OscType::SAMPLE) {
 						soundDrum->oscillatorSync = current_value;
 					}
@@ -55,8 +56,8 @@ public:
 	}
 	bool isRelevant(ModControllableAudio* modControllable, int32_t whichThing) override {
 		Sound* sound = static_cast<Sound*>(modControllable);
-		return sound->synthMode != SynthMode::FM && sound->sources[0].oscType != OscType::SAMPLE
-		       && sound->sources[1].oscType != OscType::SAMPLE;
+		return sound->synthMode != SynthMode::FM && sound->synthMode != SynthMode::KICK
+		       && sound->sources[0].oscType != OscType::SAMPLE && sound->sources[1].oscType != OscType::SAMPLE;
 	}
 
 	void getColumnLabel(StringBuf& label) override { label.append(l10n::get(l10n::String::STRING_FOR_SYNC)); }

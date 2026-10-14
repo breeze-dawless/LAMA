@@ -3,7 +3,6 @@
 #include "definitions_cxx.hpp"
 #include "extern.h"
 #include "gui/l10n/strings.h"
-#include "gui/menu_item/dx/param.h"
 #include "gui/menu_item/file_selector.h"
 #include "gui/menu_item/horizontal_menu.h"
 #include "gui/menu_item/horizontal_menu_group.h"
@@ -865,6 +864,17 @@ void SoundEditor::updatePadLightsFor(MenuItem* currentItem) {
 				currentItem = menu_item::multiRangeMenu.menuItemHeadingTo;
 			}
 
+			// Kick synth mode controls live on repurposed pads (see getKickShortcut())
+			{
+				int32_t kickX;
+				int32_t kickY;
+				bool kickSecondLayer;
+				if (getKickShortcutPad(currentItem, &kickX, &kickY, &kickSecondLayer)) {
+					setupShortcutBlink(kickX, kickY, 0, kickSecondLayer ? 0b00000011 /* yellow */ : 0);
+					goto stopThat;
+				}
+			}
+
 			// First, see if there's a shortcut for the actual MenuItem we're currently on
 			for (int32_t x = 0; x < kDisplayWidth; x++) {
 				for (int32_t y = 0; y < kDisplayHeight; y++) {
@@ -1114,6 +1124,25 @@ void SoundEditor::markInstrumentAsEdited() {
 
 static const uint32_t shortcutPadUIModes[] = {UI_MODE_AUDITIONING, UI_MODE_HOLDING_AFFECT_ENTIRE_IN_SOUND_EDITOR, 0};
 
+/// The Sound a grid shortcut is about to edit (the synth, or the selected kit row) - known before setup() has run
+static Sound* getSoundForShortcut() {
+	Clip* clip = getCurrentClip();
+	if (clip == nullptr || clip->type != ClipType::INSTRUMENT) {
+		return nullptr;
+	}
+	Output* output = clip->output;
+	if (output->type == OutputType::SYNTH) {
+		return static_cast<SoundInstrument*>(output);
+	}
+	if (output->type == OutputType::KIT) {
+		Drum* drum = static_cast<Kit*>(output)->selectedDrum;
+		if (drum != nullptr && drum->type == DrumType::SOUND) {
+			return static_cast<SoundDrum*>(drum);
+		}
+	}
+	return nullptr;
+}
+
 ActionResult SoundEditor::potentialShortcutPadAction(int32_t x, int32_t y, bool on) {
 	bool ignoreAction = false;
 	bool modulationItemFound = false;
@@ -1174,14 +1203,6 @@ ActionResult SoundEditor::potentialShortcutPadAction(int32_t x, int32_t y, bool 
 		}
 
 		else {
-			if (getCurrentUI() == &soundEditor && getCurrentMenuItem() == &dxParam
-			    && runtimeFeatureSettings.get(RuntimeFeatureSettingType::EnableDX7Engine)
-			           == RuntimeFeatureStateToggle::On) {
-				if (dxParam.potentialShortcutPadAction(x, y, on)) {
-					return ActionResult::DEALT_WITH;
-				}
-			}
-
 			// Shortcut to patch a modulation source to the parameter we're already looking at
 			if (getCurrentUI() == &soundEditor && ((x == 14 && y >= 5) || x == 15)) {
 
@@ -1323,6 +1344,13 @@ getOut:
 							item = secondLayerItem;
 						}
 					}
+
+					// Kick synth mode: the envelope 3 / 4 pads open the pitch envelope controls
+					if (Sound* sound = getSoundForShortcut(); sound != nullptr) {
+						if (MenuItem* kickItem = getKickShortcut(sound, x, y, secondLayerShortcutsToggled)) {
+							item = kickItem;
+						}
+					}
 				}
 doSetup:
 				if (item) {
@@ -1360,11 +1388,6 @@ doSetup:
 					const int32_t thingIndex = x & 1;
 
 					bool setupSuccess = setup(currentClip, item, thingIndex);
-
-					if (!setupSuccess && item == &modulator0Volume && currentSource->oscType == OscType::DX7) {
-						item = &dxParam;
-						setupSuccess = setup(currentClip, item, thingIndex);
-					}
 
 					if (!setupSuccess) {
 						return ActionResult::DEALT_WITH;

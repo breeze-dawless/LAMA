@@ -397,4 +397,33 @@ protected:
 	}
 };
 
+// Tone: clean-lowend split - bass bypasses the shaper entirely (see shaperCleanLowEnd(),
+// dsp/shaper_buffer.h). A plain field like Shape X/Y (not a patched param, and unlike them it
+// never touches the lookup tables, so no regeneration needed here).
+class TableShaperTone final : public IntegerWithOff {
+public:
+	using IntegerWithOff::IntegerWithOff;
+
+	void readCurrentValue() override { this->setValue(soundEditor.currentModControllable->shaper.tone); }
+	bool usesAffectEntire() override { return true; }
+	void writeCurrentValue() override {
+		int32_t current_value = this->getValue();
+
+		if (currentUIMode == UI_MODE_HOLDING_AFFECT_ENTIRE_IN_SOUND_EDITOR && soundEditor.editingKitRow()) {
+			Kit* kit = getCurrentKit();
+			for (Drum* thisDrum = kit->firstDrum; thisDrum != nullptr; thisDrum = thisDrum->next) {
+				if (thisDrum->type == DrumType::SOUND) {
+					auto* soundDrum = static_cast<SoundDrum*>(thisDrum);
+					soundDrum->shaper.tone = current_value;
+				}
+			}
+		}
+		else {
+			soundEditor.currentModControllable->shaper.tone = current_value;
+		}
+	}
+	[[nodiscard]] int32_t getMaxValue() const override { return kMaxMenuValue; }
+	[[nodiscard]] RenderingStyle getRenderingStyle() const override { return BAR; }
+};
+
 } // namespace deluge::gui::menu_item::fx

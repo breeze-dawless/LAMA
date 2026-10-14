@@ -62,7 +62,7 @@ bool FileSelector::isRelevant(ModControllableAudio* modControllable, int32_t whi
 		return sound->getSynthMode() != SynthMode::FM;
 	}
 
-	return sound->getSynthMode() == SynthMode::SUBTRACTIVE && source.oscType == OscType::SAMPLE;
+	return sound->hasSubtractiveOscillators() && source.oscType == OscType::SAMPLE;
 }
 MenuPermission FileSelector::checkPermissionToBeginSession(ModControllableAudio* modControllable, int32_t whichThing,
                                                            ::MultiRange** currentRange) {
@@ -73,9 +73,7 @@ MenuPermission FileSelector::checkPermissionToBeginSession(ModControllableAudio*
 
 	Sound* sound = static_cast<Sound*>(modControllable);
 
-	bool can =
-	    (sound->getSynthMode() == SynthMode::SUBTRACTIVE
-	     || (sound->getSynthMode() == SynthMode::RINGMOD && sound->sources[sourceId_].oscType == OscType::WAVETABLE));
+	bool can = sound->hasSubtractiveOscillators();
 
 	if (!can) {
 		return MenuPermission::NO;

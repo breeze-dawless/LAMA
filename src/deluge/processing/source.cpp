@@ -17,14 +17,8 @@
 
 #include "processing/source.h"
 #include "definitions_cxx.hpp"
-#include "dsp/dx/dx7note.h"
-#include "dsp/dx/engine.h"
-#include "dsp/phi_gendy.hpp"
 #include "dsp/phi_morph.hpp"
-#include "dsp/phi_stair.hpp"
 #include "dsp/phi_swarm.hpp"
-#include "dsp/phi_vox.hpp"
-#include "dsp/phi_weave.hpp"
 #include "gui/ui/browser/sample_browser.h"
 #include "gui/ui/sound_editor.h"
 #include "model/sample/sample.h"
@@ -35,6 +29,7 @@
 #include "storage/multi_range/multi_wave_table_range.h"
 #include "storage/multi_range/multisample_range.h"
 #include "storage/wave_table/wave_table.h"
+#include "util/exceptions.h"
 #include "util/functions.h"
 #include <cstring>
 
@@ -50,17 +45,37 @@ Source::Source() {
 	timeStretchAmount = 0;
 
 	defaultRangeI = -1;
-	dxPatch = nullptr;
 }
 
 Source::~Source() {
 	destructAllMultiRanges();
 	delete phiMorphCache;
-	delete phiWeaveCache;
-	delete phiVoxCache;
 	delete phiSwarmCache;
-	delete phiGendyCache;
-	delete phiStairCache;
+}
+
+namespace {
+template <typename Cache>
+bool ensureCache(Cache*& cache) {
+	if (cache == nullptr) {
+		try {
+			cache = new Cache{};
+		} catch (deluge::exception e) { // Out of memory
+			return false;
+		}
+	}
+	return true;
+}
+} // namespace
+
+bool Source::ensurePhiCache() {
+	switch (oscType) {
+	case OscType::PHI_MORPH:
+		return ensureCache(phiMorphCache);
+	case OscType::PHI_SWARM:
+		return ensureCache(phiSwarmCache);
+	default:
+		return true;
+	}
 }
 
 // Destructs the actual MultiRanges, but doesn't actually deallocate the memory, aka calling empty() on the Array - the
@@ -95,27 +110,6 @@ void Source::cloneFrom(Source* other) {
 	delete phiMorphCache;
 	phiMorphCache = nullptr;
 
-	// PHI_WEAVE zone parameters
-	phiWeaveZoneA = other->phiWeaveZoneA;
-	phiWeaveZoneB = other->phiWeaveZoneB;
-	phiWeavePhaseOffsetA = other->phiWeavePhaseOffsetA;
-	phiWeavePhaseOffsetB = other->phiWeavePhaseOffsetB;
-	phiWeaveGamma = other->phiWeaveGamma;
-	// phiWeaveCache is lazy-allocated, don't clone it
-	delete phiWeaveCache;
-	phiWeaveCache = nullptr;
-
-	// PHI_VOX zone parameters
-	phiVoxZoneA = other->phiVoxZoneA;
-	phiVoxZoneB = other->phiVoxZoneB;
-	phiVoxPhaseOffsetA = other->phiVoxPhaseOffsetA;
-	phiVoxPhaseOffsetB = other->phiVoxPhaseOffsetB;
-	phiVoxGamma = other->phiVoxGamma;
-	phiVoxTracking = other->phiVoxTracking;
-	// phiVoxCache is lazy-allocated, don't clone it
-	delete phiVoxCache;
-	phiVoxCache = nullptr;
-
 	// PHI_SWARM zone parameters
 	phiSwarmZoneA = other->phiSwarmZoneA;
 	phiSwarmZoneB = other->phiSwarmZoneB;
@@ -126,36 +120,7 @@ void Source::cloneFrom(Source* other) {
 	delete phiSwarmCache;
 	phiSwarmCache = nullptr;
 
-	// PHI_GENDY zone parameters
-	phiGendyZoneA = other->phiGendyZoneA;
-	phiGendyZoneB = other->phiGendyZoneB;
-	phiGendyPhaseOffsetA = other->phiGendyPhaseOffsetA;
-	phiGendyPhaseOffsetB = other->phiGendyPhaseOffsetB;
-	phiGendyGamma = other->phiGendyGamma;
-	phiStairZoneA = other->phiStairZoneA;
-	phiStairZoneB = other->phiStairZoneB;
-	phiStairPhaseOffsetA = other->phiStairPhaseOffsetA;
-	phiStairPhaseOffsetB = other->phiStairPhaseOffsetB;
-	phiStairGamma = other->phiStairGamma;
-	delete phiStairCache;
-	phiStairCache = nullptr;
 	phiStereoZone = other->phiStereoZone;
-	// phiGendyCache is lazy-allocated, don't clone it
-	delete phiGendyCache;
-	phiGendyCache = nullptr;
-
-	// Deep copy DxPatch
-	if (other->dxPatch) {
-		if (!dxPatch) {
-			dxPatch = new DxPatch();
-		}
-		*dxPatch = *other->dxPatch;
-	}
-	else {
-		delete dxPatch;
-		dxPatch = nullptr;
-	}
-	dxPatchChanged = other->dxPatchChanged;
 
 	// Clone ranges — first clear existing
 	destructAllMultiRanges();
@@ -348,9 +313,6 @@ void Source::doneReadingFromFile(Sound* sound) {
 	if (synthMode == SynthMode::FM) {
 		oscType = OscType::SINE;
 	}
-	else if (synthMode == SynthMode::RINGMOD) {
-		oscType = std::min(oscType, kLastRingmoddableOscType);
-	}
 
 	bool isActualSampleOscillator = (synthMode != SynthMode::FM && oscType == OscType::SAMPLE);
 
@@ -438,17 +400,7 @@ doChangeType:
 	}
 
 	oscType = newType;
-	if (oscType == OscType::DX7) {
-		ensureDxPatch();
-	}
 }
-
-DxPatch* Source::ensureDxPatch() {
-	if (dxPatch == nullptr) {
-		dxPatch = getDxEngine()->newPatch();
-	}
-	return dxPatch;
-};
 
 /*
     for (int32_t e = 0; e < ranges.getNumElements(); e++) {

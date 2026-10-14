@@ -50,7 +50,6 @@ extern gui::menu_item::osc::AudioRecorder sample1RecorderMenu;
 extern gui::menu_item::audio_clip::SampleMarkerEditor audioClipSampleMarkerEditorMenuStart;
 extern gui::menu_item::audio_clip::SampleMarkerEditor audioClipSampleMarkerEditorMenuEnd;
 extern gui::menu_item::EditName nameEditMenu;
-extern gui::menu_item::Submenu dxMenu;
 extern gui::menu_item::Submenu stemExportMenu;
 extern gui::menu_item::stem_export::Start startStemExportMenu;
 
@@ -112,6 +111,13 @@ extern MenuItem* paramShortcutsForSoundsSecondLayer[kDisplayWidth][kDisplayHeigh
 extern MenuItem* paramShortcutsForAudioClips[kDisplayWidth][kDisplayHeight];
 extern MenuItem* paramShortcutsForSongView[kDisplayWidth][kDisplayHeight];
 extern MenuItem* paramShortcutsForKitGlobalFX[kDisplayWidth][kDisplayHeight];
+
+class Sound;
+/// The Kick synth mode control a shortcut pad opens for this sound instead of its usual item, or nullptr if the pad
+/// keeps its normal meaning (only the envelope 3 / 4 pads change, and only in Kick mode)
+MenuItem* getKickShortcut(Sound* sound, int32_t x, int32_t y, bool secondLayer);
+/// The repurposed pad a Kick synth mode control lives on, for blinking it; false if it has none
+bool getKickShortcutPad(const MenuItem* item, int32_t* x, int32_t* y, bool* secondLayer);
 
 extern deluge::vector<gui::menu_item::HorizontalMenu*> horizontalMenusChainForSound;
 extern deluge::vector<gui::menu_item::HorizontalMenu*> horizontalMenusChainForKit;

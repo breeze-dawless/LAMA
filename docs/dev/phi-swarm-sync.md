@@ -1,10 +1,9 @@
 # PHI_SWARM: Synchronization Oscillator — Design & Physics
 
-PHI_SWARM (`dsp/phi_swarm.{hpp,cpp}`, `OscType::PHI_SWARM`) is the fourth phi-family
-oscillator, built on the physics of **oscillators that entrain each other** — injection
+PHI_SWARM (`dsp/phi_swarm.{hpp,cpp}`, `OscType::PHI_SWARM`) is a phi-family
+oscillator built on the physics of **oscillators that entrain each other** — injection
 locking, Arnold tongues, and the Kuramoto transition. Where [PHI_MORPH](phi-triangle.md)
-is geometry, [PHI_WEAVE](phi-weave-physics.md) is physics-in-motion, and
-[PHI_VOX](phi-vox-vosim.md) is voice, PHI_SWARM is *relationship*: its sound is the
+is geometry, PHI_SWARM is *relationship*: its sound is the
 behavior between oscillators, not the oscillators themselves.
 
 ## Literature

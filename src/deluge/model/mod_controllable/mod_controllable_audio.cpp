@@ -68,6 +68,10 @@ ModControllableAudio::ModControllableAudio() {
 
 	// Saturation
 	clippingAmount = 0;
+	clippingTweak = 25;
+	clippingMix = 50;
+	clippingTone = 0;
+	foldTone = 0;
 
 	SyncLevel syncLevel;
 	Song* song = preLoadedSong;
@@ -100,6 +104,12 @@ void ModControllableAudio::cloneFrom(ModControllableAudio* other) {
 	lpfMode = other->lpfMode;
 	hpfMode = other->hpfMode;
 	clippingAmount = other->clippingAmount;
+	clippingTweak = other->clippingTweak;
+	clippingMix = other->clippingMix;
+	clippingTone = other->clippingTone;
+	foldTone = other->foldTone;
+	subBassMonoAmount = other->subBassMonoAmount;
+	subBassMonoFreq = other->subBassMonoFreq;
 	modFXType_ = other->modFXType_;
 	bassFreq = other->bassFreq; // Eventually, these shouldn't be variables like this
 	trebleFreq = other->trebleFreq;
@@ -265,6 +275,11 @@ bool ModControllableAudio::hasTrebleAdjusted(ParamManager* paramManager) {
 	return (unpatchedParams->getValue(params::UNPATCHED_TREBLE) != 0);
 }
 
+bool ModControllableAudio::hasMidAdjusted(ParamManager* paramManager) {
+	UnpatchedParamSet* unpatchedParams = paramManager->getUnpatchedParamSet();
+	return (unpatchedParams->getValue(params::UNPATCHED_MID) != 0);
+}
+
 void ModControllableAudio::processFX(std::span<StereoSample> buffer, ModFXType modFXType, int32_t modFXRate,
                                      int32_t modFXDepth, const Delay::State& delayWorkingState, int32_t* postFXVolume,
                                      ParamManager* paramManager, bool anySoundComingIn, q31_t reverbSendAmount) {
@@ -283,6 +298,7 @@ void ModControllableAudio::processFX(std::span<StereoSample> buffer, ModFXType m
 	// EQ -------------------------------------------------------------------------------------
 	bool thisDoBass = hasBassAdjusted(paramManager);
 	bool thisDoTreble = hasTrebleAdjusted(paramManager);
+	bool thisDoMid = hasMidAdjusted(paramManager);
 
 	// Bass. No-change represented by 0. Off completely represented by -536870912
 	int32_t positive = (unpatchedParams->getValue(params::UNPATCHED_BASS) >> 1) + 1073741824;
@@ -292,18 +308,25 @@ void ModControllableAudio::processFX(std::span<StereoSample> buffer, ModFXType m
 	positive = (unpatchedParams->getValue(params::UNPATCHED_TREBLE) >> 1) + 1073741824;
 	int32_t trebleAmount = multiply_32x32_rshift32_rounded(positive, positive) << 1;
 
-	if (thisDoBass || thisDoTreble) {
+	// Mid. No-change represented by 0, same convention as Bass. Mid has no frequency knob of its
+	// own: its band is implicitly "whatever's between the current Bass Frequency and Treble
+	// Frequency settings" (see doEQ() below), so it needs both trackers alive even when Bass and
+	// Treble's own amounts are untouched.
+	positive = (unpatchedParams->getValue(params::UNPATCHED_MID) >> 1) + 1073741824;
+	int32_t midAmount = (multiply_32x32_rshift32_rounded(positive, positive) << 1) - 536870912;
 
-		if (thisDoBass) {
+	if (thisDoBass || thisDoTreble || thisDoMid) {
+
+		if (thisDoBass || thisDoMid) {
 			bassFreq = getExp(120000000, (unpatchedParams->getValue(params::UNPATCHED_BASS_FREQ) >> 5) * 6);
 		}
 
-		if (thisDoTreble) {
+		if (thisDoTreble || thisDoMid) {
 			trebleFreq = getExp(700000000, (unpatchedParams->getValue(params::UNPATCHED_TREBLE_FREQ) >> 5) * 6);
 		}
 
 		for (StereoSample& sample : buffer) {
-			doEQ(thisDoBass, thisDoTreble, &sample.l, &sample.r, bassAmount, trebleAmount);
+			doEQ(thisDoBass, thisDoTreble, thisDoMid, &sample.l, &sample.r, bassAmount, trebleAmount, midAmount);
 		}
 	}
 
@@ -514,12 +537,15 @@ void ModControllableAudio::processEroderEffect(std::span<StereoSample> buffer, P
 	                           getLastNoteCode());
 }
 
-inline void ModControllableAudio::doEQ(bool doBass, bool doTreble, int32_t* inputL, int32_t* inputR, int32_t bassAmount,
-                                       int32_t trebleAmount) {
+inline void ModControllableAudio::doEQ(bool doBass, bool doTreble, bool doMid, int32_t* inputL, int32_t* inputR,
+                                       int32_t bassAmount, int32_t trebleAmount, int32_t midAmount) {
 	int32_t trebleOnlyL;
 	int32_t trebleOnlyR;
 
-	if (doTreble) {
+	// Tracking runs whenever ITS OWN band OR Mid is active - Mid is built entirely from
+	// withoutTreble/bassOnly below, so both trackers must stay alive even if the user has left
+	// Bass and Treble's own amounts untouched (e.g. "boost only the mids").
+	if (doTreble || doMid) {
 		int32_t distanceToGoL = *inputL - withoutTrebleL;
 		int32_t distanceToGoR = *inputR - withoutTrebleR;
 		withoutTrebleL += multiply_32x32_rshift32(distanceToGoL, trebleFreq) << 1;
@@ -530,11 +556,23 @@ inline void ModControllableAudio::doEQ(bool doBass, bool doTreble, int32_t* inpu
 		*inputR = withoutTrebleR; // Input now has had the treble removed. Or is this bad?
 	}
 
-	if (doBass) {
+	if (doBass || doMid) {
 		int32_t distanceToGoL = *inputL - bassOnlyL;
 		int32_t distanceToGoR = *inputR - bassOnlyR;
 		bassOnlyL += multiply_32x32_rshift32(distanceToGoL, bassFreq); // 33554432
 		bassOnlyR += multiply_32x32_rshift32(distanceToGoR, bassFreq); // 33554432
+	}
+
+	if (doMid) {
+		// Mid = everything below Treble's cutoff but above Bass's cutoff. withoutTrebleL/R IS
+		// "below Treble's cutoff"; bassOnlyL/R (a further lowpass of that) IS "below Bass's
+		// cutoff" - their difference is exactly the band in between. No separate one-pole
+		// tracker needed for Mid, just this subtraction of state the trackers above already
+		// maintain.
+		int32_t midOnlyL = withoutTrebleL - bassOnlyL;
+		int32_t midOnlyR = withoutTrebleR - bassOnlyR;
+		*inputL += (multiply_32x32_rshift32(midOnlyL, midAmount) << 3);
+		*inputR += (multiply_32x32_rshift32(midOnlyR, midAmount) << 3);
 	}
 
 	if (doTreble) {
@@ -555,7 +593,15 @@ void ModControllableAudio::writeAttributesToFile(Serializer& writer) {
 	writer.writeAttribute("filterRoute", (char*)filterRouteToString(filterRoute));
 	if (clippingAmount) {
 		writer.writeAttribute("clippingAmount", clippingAmount);
+		writer.writeAttribute("clippingTweak", clippingTweak);
+		writer.writeAttribute("clippingMix", clippingMix);
+		writer.writeAttribute("clippingTone", clippingTone);
 	}
+	if (foldTone) {
+		writer.writeAttribute("foldTone", foldTone);
+	}
+	writer.writeAttribute("subBassMonoAmount", subBassMonoAmount);
+	writer.writeAttribute("subBassMonoFreq", subBassMonoFreq);
 	// Table shaper state (only writes non-default values)
 	shaper.writeToFile(writer);
 	// Disperser state
@@ -1167,6 +1213,30 @@ Error ModControllableAudio::readTagFromFile(Deserializer& reader, char const* ta
 	else if (!strcmp(tagName, "clippingAmount")) {
 		clippingAmount = reader.readTagOrAttributeValueInt();
 		reader.exitTag("clippingAmount");
+	}
+	else if (!strcmp(tagName, "clippingTweak")) {
+		clippingTweak = reader.readTagOrAttributeValueInt();
+		reader.exitTag("clippingTweak");
+	}
+	else if (!strcmp(tagName, "clippingMix")) {
+		clippingMix = reader.readTagOrAttributeValueInt();
+		reader.exitTag("clippingMix");
+	}
+	else if (!strcmp(tagName, "clippingTone")) {
+		clippingTone = reader.readTagOrAttributeValueInt();
+		reader.exitTag("clippingTone");
+	}
+	else if (!strcmp(tagName, "foldTone")) {
+		foldTone = reader.readTagOrAttributeValueInt();
+		reader.exitTag("foldTone");
+	}
+	else if (!strcmp(tagName, "subBassMonoAmount")) {
+		subBassMonoAmount = reader.readTagOrAttributeValueInt();
+		reader.exitTag("subBassMonoAmount");
+	}
+	else if (!strcmp(tagName, "subBassMonoFreq")) {
+		subBassMonoFreq = reader.readTagOrAttributeValueInt();
+		reader.exitTag("subBassMonoFreq");
 	}
 
 	// Table shaper state
@@ -2210,6 +2280,8 @@ char const* ModControllableAudio::getLPFModeDisplayName() {
 		return l10n::get(STRING_FOR_24DB_LADDER);
 	case FilterMode::TRANSISTOR_24DB_DRIVE:
 		return l10n::get(STRING_FOR_DRIVE);
+	case FilterMode::VOWEL:
+		return l10n::get(STRING_FOR_VOWEL);
 	case FilterMode::SVF_BAND:
 		return l10n::get(STRING_FOR_SVF_BAND);
 	case FilterMode::SVF_NOTCH:
@@ -2220,8 +2292,9 @@ char const* ModControllableAudio::getLPFModeDisplayName() {
 }
 
 void ModControllableAudio::switchHPFMode() {
-	// this works fine, the offset to the first hpf doesn't matter with the modulus
-	hpfMode = static_cast<FilterMode>((util::to_underlying(hpfMode) + 1) % kNumHPFModes + kFirstHPFMode);
+	// Cycle within the HPF modes (they don't start at 0 - the LPF-only modes come first)
+	hpfMode =
+	    static_cast<FilterMode>((util::to_underlying(hpfMode) - kFirstHPFMode + 1) % kNumHPFModes + kFirstHPFMode);
 }
 
 // for future use with FM

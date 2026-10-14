@@ -18,15 +18,10 @@
 #include "model/voice/voice.h"
 #include "arm_neon_shim.h"
 #include "definitions_cxx.hpp"
-#include "dsp/dx/engine.h"
 #include "dsp/filter/filter_set.h"
 #include "dsp/oscillators/sine_osc.h"
-#include "dsp/phi_gendy.hpp"
 #include "dsp/phi_morph.hpp"
-#include "dsp/phi_stair.hpp"
 #include "dsp/phi_swarm.hpp"
-#include "dsp/phi_vox.hpp"
-#include "dsp/phi_weave.hpp"
 #include "dsp/shaper_buffer.h"
 #include "dsp/timestretch/time_stretcher.h"
 #include "dsp/util.hpp"
@@ -58,6 +53,7 @@
 #include "dsp/oscillators/oscillator.h"
 #include "util/misc.h"
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <new>
 
@@ -315,17 +311,6 @@ bool Voice::noteOn(ModelStackWithSoundFlags* modelStack, int32_t newNoteCodeBefo
 	ParamManagerForTimeline* paramManager = (ParamManagerForTimeline*)modelStack->paramManager;
 	Sound& sound = *static_cast<Sound*>(modelStack->modControllable);
 
-	// PHI_WEAVE: a new note plucks the (shared) string; PHI_GENDY: it
-	// startles the (shared) walkers
-	for (int32_t s = 0; s < kNumSources; s++) {
-		if (sound.sources[s].oscType == OscType::PHI_WEAVE && sound.sources[s].phiWeaveCache) {
-			sound.sources[s].phiWeaveCache->pluckPending = true;
-		}
-		if (sound.sources[s].oscType == OscType::PHI_GENDY && sound.sources[s].phiGendyCache) {
-			sound.sources[s].phiGendyCache->startlePending = true;
-		}
-	}
-
 	// Setup "half-baked" envelope output values. These need to exist before we do the initial patching below - and it's
 	// only after that that we can render the "actual" envelope output values, taking their own input patching into
 	// account.
@@ -373,9 +358,19 @@ bool Voice::noteOn(ModelStackWithSoundFlags* modelStack, int32_t newNoteCodeBefo
 
 		lastSaturationTanHWorkingValue[0] = 2147483648;
 		lastSaturationTanHWorkingValue[1] = 2147483648;
+		lastSaturationToneState[0] = 0;
+		lastSaturationToneState[1] = 0;
+		monoMakerState[0] = {};
+		monoMakerState[1] = {};
+		wavefoldState[0] = {};
+		wavefoldState[1] = {};
+		wavefoldDcBlockActive = false;
 
 		// Reset sine shaper state (DC blocker, feedback, stereo LFO)
 		sineShaperState = dsp::SineShaperVoiceState{};
+
+		kickSamples = 0; // Kick mode: the pitch envelopes start over
+		clickPos = 0;    // ... and so does the click sample
 	}
 
 	// Porta
@@ -403,6 +398,10 @@ bool Voice::noteOn(ModelStackWithSoundFlags* modelStack, int32_t newNoteCodeBefo
 	// them *after* initial patching is performed.
 	for (int32_t e = 0; e < kNumEnvelopes; e++) {
 		sourceValues[util::to_underlying(PatchSource::ENVELOPE_0) + e] = envelopes[e].noteOn(e, &sound, this);
+		if (isKickPitchEnvelope(e)) {
+			sourceValues[util::to_underlying(PatchSource::ENVELOPE_0) + e] =
+			    kickPitchEnvelopeOutput(e, static_cast<float>(kickSamples));
+		}
 	}
 
 	if (resetEnvelopes) {
@@ -457,9 +456,6 @@ bool Voice::noteOn(ModelStackWithSoundFlags* modelStack, int32_t newNoteCodeBefo
 		}
 		else {
 gotInactive:
-			if (sound.getSynthMode() == SynthMode::RINGMOD) {
-				return false;
-			}
 			sourceEverActive = false;
 		}
 
@@ -548,12 +544,15 @@ activenessDetermined:
 		}
 	}
 
-	if (sound.getSynthMode() == SynthMode::FM) {
+	if (sound.usesModulators()) {
 		uint32_t initialPhase = getOscInitialPhaseForZero(OscType::SINE);
 		for (int32_t u = 0; u < sound.numUnison; u++) {
 			for (int32_t m = 0; m < kNumModulators; m++) {
 				if (sound.modulatorRetriggerPhase[m] != 0xFFFFFFFF) {
 					unisonParts[u].modulatorPhase[m] = initialPhase + sound.modulatorRetriggerPhase[m];
+				}
+				else if (sound.synthMode == SynthMode::KICK && resetEnvelopes) {
+					unisonParts[u].modulatorPhase[m] = initialPhase; // Kick mode: every hit the same
 				}
 				if (resetEnvelopes) {
 					unisonParts[u].modulatorFeedback[m] = 0;
@@ -634,7 +633,7 @@ void Voice::randomizeOscPhases(const Sound& sound) {
 			unisonParts[u].sources[s].oscPos = getNoise();
 			// TODO: we should do sample play pos, too
 		}
-		if (sound.getSynthMode() == SynthMode::FM) {
+		if (sound.usesModulators()) {
 			for (int32_t m = 0; m < kNumModulators; m++) {
 				unisonParts[u].modulatorPhase[m] = getNoise();
 			}
@@ -753,8 +752,8 @@ makeInactive: // Frequency too high to render! (Higher than 22.05kHz)
 		}
 	}
 
-	// FM modulators
-	if (sound.getSynthMode() == SynthMode::FM) {
+	// FM modulators (in Kick mode they bend the oscillators)
+	if (sound.usesModulators()) {
 		for (int32_t m = 0; m < kNumModulators; m++) {
 
 			if (sound.getSmoothedPatchedParamValue(params::LOCAL_MODULATOR_0_VOLUME + m, *paramManager)
@@ -854,13 +853,6 @@ void Voice::noteOff(ModelStackWithSoundFlags* modelStack, bool allowReleaseStage
 					}
 				}
 				guides[s].playDirection = savedDirection;
-			}
-			else if (sound.sources[s].oscType == OscType::DX7) {
-				for (int u = 0; u < sound.numUnison; u++) {
-					if (unisonParts[u].sources[s].dxVoice) {
-						unisonParts[u].sources[s].dxVoice->keyup();
-					}
-				}
 			}
 		}
 	}
@@ -991,10 +983,17 @@ uint32_t Voice::getLocalLFOPhaseIncrement(LFO_ID lfoId, deluge::modulation::para
 			if (e == 0 && overrideAmplitudeEnvelopeReleaseRate) {
 				release = overrideAmplitudeEnvelopeReleaseRate;
 			}
-			sourceValues[util::to_underlying(PatchSource::ENVELOPE_0) + e] =
-			    envelopes[e].render(numSamples, paramFinalValues[params::LOCAL_ENV_0_ATTACK + e],
-			                        paramFinalValues[params::LOCAL_ENV_0_DECAY + e],
-			                        paramFinalValues[params::LOCAL_ENV_0_SUSTAIN + e], release, decayTableSmall8);
+			// Kick mode's pitch envelopes put out their sweep wherever else they're patched
+			if (isKickPitchEnvelope(e)) {
+				sourceValues[util::to_underlying(PatchSource::ENVELOPE_0) + e] =
+				    kickPitchEnvelopeOutput(e, static_cast<float>(kickSamples + numSamples));
+			}
+			else {
+				sourceValues[util::to_underlying(PatchSource::ENVELOPE_0) + e] =
+				    envelopes[e].render(numSamples, paramFinalValues[params::LOCAL_ENV_0_ATTACK + e],
+				                        paramFinalValues[params::LOCAL_ENV_0_DECAY + e],
+				                        paramFinalValues[params::LOCAL_ENV_0_SUSTAIN + e], release, decayTableSmall8);
+			}
 			uint32_t anyChange = (old != sourceValues[util::to_underlying(PatchSource::ENVELOPE_0) + e]);
 			sourcesChanged |= anyChange << (util::to_underlying(PatchSource::ENVELOPE_0) + e);
 		}
@@ -1304,8 +1303,8 @@ skipAutoRelease: {}
 
 	int32_t overallOscillatorAmplitudeIncrement;
 
-	// If not ringmod, then sources need their volume calculated
-	if (synthMode != SynthMode::RINGMOD) [[likely]] {
+	// Sources need their volume calculated
+	{
 
 		// params::LOCAL_OSC_x_VOLUME can normally only be up to a quarter of full range, but patching can make it up to
 		// full-range overallOscAmplitude (same range as) params::LOCAL_VOLUME, is the same.
@@ -1360,8 +1359,8 @@ skipAutoRelease: {}
 
 		filterGainLastTime = filterGain;
 
-		// If FM, cache whether modulators are active
-		if (synthMode == SynthMode::FM) {
+		// If FM (or Kick, where the modulators bend the oscillators), cache whether modulators are active
+		if (sound.usesModulators()) {
 			for (int32_t m = 0; m < kNumModulators; m++) {
 				modulatorsActive[m] =
 				    (paramFinalValues[params::LOCAL_MODULATOR_0_VOLUME + m] != 0 || modulatorAmplitudeLastTime[m] != 0);
@@ -1437,11 +1436,20 @@ skipAutoRelease: {}
 		// Perform the same limiting that we do above for the oscillators
 		int32_t noiseAmplitude = std::min(n, (int32_t)268435455) >> 2;
 
-		int32_t* __restrict__ thisSample = oscBuffer;
-		do {
-			*thisSample = multiply_32x32_rshift32(getNoise(), noiseAmplitude);
-			thisSample++;
-		} while (thisSample != oscBufferEnd);
+		// Kick mode with a click sample: that plays instead of the noise, in mono like the noise
+		if (synthMode == SynthMode::KICK && sound.clickSample.loaded()) {
+			sound.clickSample.render(oscBuffer, numSamples, &clickPos, noiseAmplitude);
+			if (channels == 2) {
+				memset(oscBuffer + numSamples, 0, numSamples * sizeof(int32_t));
+			}
+		}
+		else {
+			int32_t* __restrict__ thisSample = oscBuffer;
+			do {
+				*thisSample = multiply_32x32_rshift32(getNoise(), noiseAmplitude);
+				thisSample++;
+			} while (thisSample != oscBufferEnd);
+		}
 
 		anythingInOscBuffer = true;
 	}
@@ -1449,6 +1457,10 @@ skipAutoRelease: {}
 	// Otherwise, clear the buffer
 	else {
 		memset(oscBuffer, 0, channels * numSamples * sizeof(int32_t));
+		// A click sample at level 0 keeps time, so turning it up mid-note doesn't start it late
+		if (synthMode == SynthMode::KICK && sound.clickSample.loaded()) {
+			sound.clickSample.skip(numSamples, &clickPos);
+		}
 	}
 
 	// Even if first rendering into a local Voice buffer, we'll very often still just do panning at the Sound level
@@ -1463,14 +1475,22 @@ skipAutoRelease: {}
 
 	uint32_t sourcesToRenderInStereo = 0;
 
-	// Normal mode: subtractive / samples. We do each source first, for all unison
-	if (synthMode == SynthMode::SUBTRACTIVE) {
+	// Normal mode: subtractive / samples. We do each source first, for all unison. Kick mode works the same way, except
+	// that its basic oscillators render per sample further down
+	if (synthMode == SynthMode::SUBTRACTIVE || synthMode == SynthMode::KICK) {
 		bool unisonPartBecameInactive = false;
 
 		uint32_t oscSyncPhaseIncrement[kMaxNumVoicesUnison];
 
+		// Kick mode: the oscillators rendered the regular way follow the pitch envelopes once per buffer
+		const int32_t sourcePitchAdjust =
+		    (synthMode == SynthMode::KICK) ? kickBlockPitchAdjust(overallPitchAdjust, numSamples) : overallPitchAdjust;
+
 		// First, render any mono sources, and note whether there are any stereo ones
 		for (int32_t s = 0; s < kNumSources; s++) {
+			if (isKickPerSampleSource(s)) {
+				continue; // See renderKickModeSources() below
+			}
 
 			uint32_t* getPhaseIncrements = nullptr;
 			bool getOutAfterGettingPhaseIncrements = false;
@@ -1496,7 +1516,7 @@ skipAutoRelease: {}
 
 			if (!sound.sources[s].renderInStereo(&sound, (SampleHolder*)guides[s].audioFileHolder)) {
 				renderBasicSource(sound, paramManager, s, oscBuffer, numSamples, false, sourceAmplitudesNow[s],
-				                  &unisonPartBecameInactive, overallPitchAdjust, (s == 1) && doingOscSync, oscSyncPos,
+				                  &unisonPartBecameInactive, sourcePitchAdjust, (s == 1) && doingOscSync, oscSyncPos,
 				                  oscSyncPhaseIncrement, sourceAmplitudeIncrements[s], getPhaseIncrements,
 				                  getOutAfterGettingPhaseIncrements, sourceWaveIndexIncrements[s]);
 				anythingInOscBuffer = true;
@@ -1506,8 +1526,8 @@ skipAutoRelease: {}
 			}
 		}
 
-		// If any sources need rendering in stereo
-		if (sourcesToRenderInStereo) {
+		// If any sources need rendering in stereo - or Kick mode's per-sample oscillators need it for unison spread
+		if (sourcesToRenderInStereo || (synthMode == SynthMode::KICK && stereoUnison)) {
 
 			// If we've already got something mono in the buffer, copy that to the right-channel buffer
 			if (anythingInOscBuffer) {
@@ -1533,7 +1553,7 @@ skipAutoRelease: {}
 					    getPhaseIncrements && !sound.isSourceActiveCurrently(s, paramManager);
 
 					renderBasicSource(sound, paramManager, s, oscBuffer, numSamples, true, sourceAmplitudesNow[s],
-					                  &unisonPartBecameInactive, overallPitchAdjust, (s == 1) && doingOscSync,
+					                  &unisonPartBecameInactive, sourcePitchAdjust, (s == 1) && doingOscSync,
 					                  oscSyncPos, oscSyncPhaseIncrement, sourceAmplitudeIncrements[s],
 					                  getPhaseIncrements, getOutAfterGettingPhaseIncrements,
 					                  sourceWaveIndexIncrements[s]);
@@ -1541,6 +1561,17 @@ skipAutoRelease: {}
 			}
 
 			didStereoTempBuffer = true;
+		}
+
+		// Kick mode: sine / triangle / square / saw oscillators run per sample, under the pitch envelopes and the FM
+		// modulators
+		if (synthMode == SynthMode::KICK) {
+			renderKickModeSources(paramManager, oscBuffer, numSamples, didStereoTempBuffer, stereoUnison,
+			                      sourceAmplitudesNow, sourceAmplitudeIncrements, modulatorsActive, overallPitchAdjust);
+			anythingInOscBuffer = true;
+			if (kickSamples < (1u << 30)) {
+				kickSamples += numSamples;
+			}
 		}
 
 		// If any unison part became inactive (for either source), and no noise-source, then it might be time to
@@ -1561,7 +1592,7 @@ skipAutoRelease: {}
 		}
 	}
 
-	// Otherwise (FM and ringmod) we go through each unison first, and for each one we render both sources together
+	// Otherwise (FM) we go through each unison first, and for each one we render both sources together
 	else {
 		if (stereoUnison) {
 			// oscBuffer is always a stereo temp buffer
@@ -1628,12 +1659,7 @@ skipAutoRelease: {}
 			if (overallPitchAdjust != kMaxSampleValue) {
 				for (int32_t s = 0; s < kNumSources; s++) {
 					if (!adjustPitch(phaseIncrements[s], overallPitchAdjust)) {
-						if (synthMode == SynthMode::RINGMOD) {
-							goto skipUnisonPart;
-						}
-						else {
-							sourceAmplitudes[s] = 0; // For FM
-						}
+						sourceAmplitudes[s] = 0;
 					}
 				}
 			}
@@ -1642,310 +1668,12 @@ skipAutoRelease: {}
 			for (int32_t s = 0; s < kNumSources; s++) {
 				if (!adjustPitch(phaseIncrements[s],
 				                 paramFinalValues[params::LOCAL_OSC_A_PITCH_ADJUST + s] + unisonPitchOffsets[s])) {
-					if (synthMode == SynthMode::RINGMOD) {
-						goto skipUnisonPart;
-					}
-					else {
-						sourceAmplitudes[s] = 0; // For FM
-					}
+					sourceAmplitudes[s] = 0;
 				}
 			}
 
-			// If ringmod
-			if (synthMode == SynthMode::RINGMOD) [[unlikely]] {
-
-				int32_t amplitudeForRingMod = 1 << 27;
-
-				if (sound.hasFilters()) {
-					amplitudeForRingMod = multiply_32x32_rshift32_rounded(amplitudeForRingMod, filterGain) << 4;
-				}
-
-				bool doingOscSyncThisOscillator = false;
-				int32_t s = 0;
-				goto cantBeDoingOscSyncForFirstOsc;
-
-				for (; s < 2; s++) {
-					doingOscSyncThisOscillator = doingOscSync;
-
-cantBeDoingOscSyncForFirstOsc:
-					// Work out pulse width, from parameter. This has no effect if we're not actually using square
-					// waves, but just do it anyway, it's a simple calculation
-					int32_t pulseWidth = (uint32_t)lshiftAndSaturate<1>(
-					    paramFinalValues[params::LOCAL_OSC_A_PHASE_WIDTH + s] + unisonPhaseWidthOffsets[s]);
-
-					OscType oscType = sound.sources[s].oscType;
-
-					uint32_t effectiveRetriggerPhase =
-					    sound.oscRetriggerPhase[s]
-					    + static_cast<uint32_t>(paramFinalValues[params::LOCAL_OSC_A_PHASE + s])
-					    + static_cast<uint32_t>(unisonPhaseOffsets[s]);
-
-					if (oscType == OscType::PHI_MORPH) {
-						auto& source = sound.sources[s];
-						if (!source.phiMorphCache) {
-							source.phiMorphCache = new dsp::PhiMorphCache{};
-						}
-						auto& cache = *source.phiMorphCache;
-						float effOffA = source.phiMorphPhaseOffsetA + source.phiMorphGamma;
-						float effOffB = source.phiMorphPhaseOffsetB + source.phiMorphGamma;
-						if (cache.needsUpdate(source.phiMorphZoneA, source.phiMorphZoneB, effOffA, effOffB)) {
-							cache.bankA = dsp::buildPhiMorphWavetable(source.phiMorphZoneA, effOffA);
-							cache.bankB = dsp::buildPhiMorphWavetable(source.phiMorphZoneB, effOffB);
-							cache.prevZoneA = source.phiMorphZoneA;
-							cache.prevZoneB = source.phiMorphZoneB;
-							cache.prevPhaseOffsetA = effOffA;
-							cache.prevPhaseOffsetB = effOffB;
-							cache.prevCrossfade = INT32_MIN; // Force effective table rebuild
-						}
-						// IIR smooth crossfade (once per buffer via u == 0 guard)
-						if (u == 0) {
-							auto& smoothed = cache.smoothedCrossfade;
-							q31_t target = sourceWaveIndexesLastTime[s];
-							if (smoothed == INT32_MIN) {
-								smoothed = target;
-							}
-							else if (smoothed != target) {
-								q31_t diff = target - smoothed;
-								smoothed += (std::abs(diff) < 256) ? diff : (diff >> 2);
-							}
-						}
-						q31_t crossfade = cache.smoothedCrossfade + unisonWaveIndexOffsets[s];
-						memset(spareRenderingBuffer[s + 2], 0, numSamples * sizeof(int32_t));
-						dsp::renderPhiMorph(cache, spareRenderingBuffer[s + 2],
-						                    spareRenderingBuffer[s + 2] + numSamples, numSamples, phaseIncrements[s],
-						                    &unisonParts[u].sources[s].oscPos, effectiveRetriggerPhase, 0, 0, false,
-						                    crossfade, pulseWidth);
-					}
-					else if (oscType == OscType::PHI_WEAVE) {
-						auto& source = sound.sources[s];
-						if (!source.phiWeaveCache) {
-							source.phiWeaveCache = new dsp::PhiWeaveCache{};
-						}
-						auto& cache = *source.phiWeaveCache;
-						float effOffA = source.phiWeavePhaseOffsetA + source.phiWeaveGamma;
-						float effOffB = source.phiWeavePhaseOffsetB + source.phiWeaveGamma;
-						if (cache.needsUpdate(source.phiWeaveZoneA, source.phiWeaveZoneB, effOffA, effOffB)) {
-							cache.bankA = dsp::buildPhiWeaveParams(source.phiWeaveZoneA, effOffA);
-							cache.bankB = dsp::buildPhiWeaveParams(source.phiWeaveZoneB, effOffB);
-							cache.effCfCached = -2.0f; // Invalidate the effective-law cache
-							cache.prevZoneA = source.phiWeaveZoneA;
-							cache.prevZoneB = source.phiWeaveZoneB;
-							cache.prevPhaseOffsetA = effOffA;
-							cache.prevPhaseOffsetB = effOffB;
-						}
-						// IIR smooth crossfade (once per buffer via u == 0 guard)
-						if (u == 0) {
-							auto& smoothed = cache.smoothedCrossfade;
-							q31_t target = sourceWaveIndexesLastTime[s];
-							if (smoothed == INT32_MIN) {
-								smoothed = target;
-							}
-							else if (smoothed != target) {
-								q31_t diff = target - smoothed;
-								smoothed += (std::abs(diff) < 256) ? diff : (diff >> 2);
-							}
-						}
-						q31_t crossfade = cache.smoothedCrossfade + unisonWaveIndexOffsets[s];
-						memset(spareRenderingBuffer[s + 2], 0, numSamples * sizeof(int32_t));
-						dsp::renderPhiWeave(cache, spareRenderingBuffer[s + 2],
-						                    spareRenderingBuffer[s + 2] + numSamples, numSamples, phaseIncrements[s],
-						                    &unisonParts[u].sources[s].oscPos, effectiveRetriggerPhase, 0, 0, false,
-						                    crossfade, pulseWidth);
-					}
-					else if (oscType == OscType::PHI_VOX) {
-						auto& source = sound.sources[s];
-						if (!source.phiVoxCache) {
-							source.phiVoxCache = new dsp::PhiVoxCache{};
-						}
-						auto& cache = *source.phiVoxCache;
-						float effOffA = source.phiVoxPhaseOffsetA + source.phiVoxGamma;
-						float effOffB = source.phiVoxPhaseOffsetB + source.phiVoxGamma;
-						if (cache.needsUpdate(source.phiVoxZoneA, source.phiVoxZoneB, effOffA, effOffB)) {
-							cache.bankA = dsp::buildPhiVoxParams(source.phiVoxZoneA, effOffA);
-							cache.bankB = dsp::buildPhiVoxParams(source.phiVoxZoneB, effOffB);
-							cache.prevZoneA = source.phiVoxZoneA;
-							cache.prevZoneB = source.phiVoxZoneB;
-							cache.prevPhaseOffsetA = effOffA;
-							cache.prevPhaseOffsetB = effOffB;
-						}
-						// IIR smooth crossfade (once per buffer via u == 0 guard)
-						if (u == 0) {
-							auto& smoothed = cache.smoothedCrossfade;
-							q31_t target = sourceWaveIndexesLastTime[s];
-							if (smoothed == INT32_MIN) {
-								smoothed = target;
-							}
-							else if (smoothed != target) {
-								q31_t diff = target - smoothed;
-								smoothed += (std::abs(diff) < 256) ? diff : (diff >> 2);
-							}
-						}
-						q31_t crossfade = cache.smoothedCrossfade + unisonWaveIndexOffsets[s];
-						memset(spareRenderingBuffer[s + 2], 0, numSamples * sizeof(int32_t));
-						dsp::renderPhiVox(cache, spareRenderingBuffer[s + 2], spareRenderingBuffer[s + 2] + numSamples,
-						                  numSamples, phaseIncrements[s], &unisonParts[u].sources[s].oscPos,
-						                  &unisonParts[u].sources[s].prevPhaseScaler, effectiveRetriggerPhase, 0, 0,
-						                  false, crossfade, pulseWidth, source.phiVoxTracking);
-					}
-					else if (oscType == OscType::PHI_SWARM) {
-						auto& source = sound.sources[s];
-						if (!source.phiSwarmCache) {
-							source.phiSwarmCache = new dsp::PhiSwarmCache{};
-						}
-						auto& cache = *source.phiSwarmCache;
-						float effOffA = source.phiSwarmPhaseOffsetA + source.phiSwarmGamma;
-						float effOffB = source.phiSwarmPhaseOffsetB + source.phiSwarmGamma;
-						if (cache.needsUpdate(source.phiSwarmZoneA, source.phiSwarmZoneB, effOffA, effOffB)) {
-							cache.bankA = dsp::buildPhiSwarmParams(source.phiSwarmZoneA, effOffA);
-							cache.bankB = dsp::buildPhiSwarmParams(source.phiSwarmZoneB, effOffB);
-							cache.prevZoneA = source.phiSwarmZoneA;
-							cache.prevZoneB = source.phiSwarmZoneB;
-							cache.prevPhaseOffsetA = effOffA;
-							cache.prevPhaseOffsetB = effOffB;
-						}
-						// IIR smooth crossfade (once per buffer via u == 0 guard)
-						if (u == 0) {
-							auto& smoothed = cache.smoothedCrossfade;
-							q31_t target = sourceWaveIndexesLastTime[s];
-							if (smoothed == INT32_MIN) {
-								smoothed = target;
-							}
-							else if (smoothed != target) {
-								q31_t diff = target - smoothed;
-								smoothed += (std::abs(diff) < 256) ? diff : (diff >> 2);
-							}
-						}
-						q31_t crossfade = cache.smoothedCrossfade + unisonWaveIndexOffsets[s];
-						memset(spareRenderingBuffer[s + 2], 0, numSamples * sizeof(int32_t));
-						dsp::renderPhiSwarm(cache, spareRenderingBuffer[s + 2],
-						                    spareRenderingBuffer[s + 2] + numSamples, numSamples, phaseIncrements[s],
-						                    &unisonParts[u].sources[s].oscPos,
-						                    &unisonParts[u].sources[s].prevPhaseScaler, effectiveRetriggerPhase, 0, 0,
-						                    false, crossfade, pulseWidth);
-					}
-					else if (oscType == OscType::PHI_GENDY) {
-						auto& source = sound.sources[s];
-						if (!source.phiGendyCache) {
-							source.phiGendyCache = new dsp::PhiGendyCache{};
-						}
-						auto& cache = *source.phiGendyCache;
-						float effOffA = source.phiGendyPhaseOffsetA + source.phiGendyGamma;
-						float effOffB = source.phiGendyPhaseOffsetB + source.phiGendyGamma;
-						if (cache.needsUpdate(source.phiGendyZoneA, source.phiGendyZoneB, effOffA, effOffB)) {
-							cache.bankA = dsp::buildPhiGendyParams(source.phiGendyZoneA, effOffA);
-							cache.bankB = dsp::buildPhiGendyParams(source.phiGendyZoneB, effOffB);
-							cache.effCfCached = -2.0f; // Invalidate the effective-law cache
-							cache.prevZoneA = source.phiGendyZoneA;
-							cache.prevZoneB = source.phiGendyZoneB;
-							cache.prevPhaseOffsetA = effOffA;
-							cache.prevPhaseOffsetB = effOffB;
-						}
-						// IIR smooth crossfade (once per buffer via u == 0 guard)
-						if (u == 0) {
-							auto& smoothed = cache.smoothedCrossfade;
-							q31_t target = sourceWaveIndexesLastTime[s];
-							if (smoothed == INT32_MIN) {
-								smoothed = target;
-							}
-							else if (smoothed != target) {
-								q31_t diff = target - smoothed;
-								smoothed += (std::abs(diff) < 256) ? diff : (diff >> 2);
-							}
-						}
-						q31_t crossfade = cache.smoothedCrossfade + unisonWaveIndexOffsets[s];
-						memset(spareRenderingBuffer[s + 2], 0, numSamples * sizeof(int32_t));
-						dsp::renderPhiGendy(cache, spareRenderingBuffer[s + 2],
-						                    spareRenderingBuffer[s + 2] + numSamples, numSamples, phaseIncrements[s],
-						                    &unisonParts[u].sources[s].oscPos, effectiveRetriggerPhase, 0, 0, false,
-						                    crossfade, pulseWidth);
-					}
-					else if (oscType == OscType::PHI_STAIR) {
-						auto& source = sound.sources[s];
-						if (!source.phiStairCache) {
-							source.phiStairCache = new dsp::PhiStairCache{};
-						}
-						auto& cache = *source.phiStairCache;
-						float effOffA = source.phiStairPhaseOffsetA + source.phiStairGamma;
-						float effOffB = source.phiStairPhaseOffsetB + source.phiStairGamma;
-						if (cache.needsUpdate(source.phiStairZoneA, source.phiStairZoneB, effOffA, effOffB)) {
-							cache.bankA = dsp::buildPhiStairParams(source.phiStairZoneA, effOffA);
-							cache.bankB = dsp::buildPhiStairParams(source.phiStairZoneB, effOffB);
-							cache.prevZoneA = source.phiStairZoneA;
-							cache.prevZoneB = source.phiStairZoneB;
-							cache.prevPhaseOffsetA = effOffA;
-							cache.prevPhaseOffsetB = effOffB;
-							cache.effCfCached = -2.0f;
-						}
-						if (u == 0) {
-							auto& smoothed = cache.smoothedCrossfade;
-							q31_t target = sourceWaveIndexesLastTime[s];
-							if (smoothed == INT32_MIN) {
-								smoothed = target;
-							}
-							else if (smoothed != target) {
-								q31_t diff = target - smoothed;
-								smoothed += (std::abs(diff) < 256) ? diff : (diff >> 2);
-							}
-						}
-						q31_t crossfade = cache.smoothedCrossfade + unisonWaveIndexOffsets[s];
-						memset(spareRenderingBuffer[s + 2], 0, numSamples * sizeof(int32_t));
-						dsp::renderPhiStair(cache, spareRenderingBuffer[s + 2],
-						                    spareRenderingBuffer[s + 2] + numSamples, numSamples, phaseIncrements[s],
-						                    &unisonParts[u].sources[s].oscPos, effectiveRetriggerPhase, 0, 0, false,
-						                    crossfade, pulseWidth);
-					}
-					else {
-						// Upstream fix: non-wavetable sources have no audioFileHolder; renderOsc
-						// only reads the WaveTable for OscType::WAVETABLE, and the unconditional
-						// dereference was a null-pointer read
-						WaveTable* waveTable = (oscType == OscType::WAVETABLE)
-						                           ? static_cast<WaveTable*>(guides[s].audioFileHolder->audioFile)
-						                           : nullptr;
-						dsp::Oscillator::renderOsc(
-						    oscType, 0, spareRenderingBuffer[s + 2], spareRenderingBuffer[s + 2] + numSamples,
-						    numSamples, phaseIncrements[s], pulseWidth, &unisonParts[u].sources[s].oscPos, false, 0,
-						    doingOscSyncThisOscillator, oscSyncPos[u], phaseIncrements[0], effectiveRetriggerPhase,
-						    sourceWaveIndexIncrements[s], sourceWaveIndexesLastTime[s] + unisonWaveIndexOffsets[s],
-						    waveTable, &unisonParts[u].sources[s].prevPhaseScaler);
-					}
-					// Sine and triangle waves come out bigger in fixed-amplitude rendering (for arbitrary reasons), so
-					// we need to compensate
-					if (oscType == OscType::SAW || oscType == OscType::ANALOG_SAW_2) {
-						amplitudeForRingMod <<= 1;
-					}
-					else if (oscType == OscType::WAVETABLE) {
-						amplitudeForRingMod <<= 2;
-					}
-				}
-
-				int32_t* __restrict__ output = oscBuffer;
-				int32_t* __restrict__ input0 = spareRenderingBuffer[2];
-				int32_t* __restrict__ input1 = spareRenderingBuffer[3];
-
-				if (stereoUnison) {
-					int32_t const* const oscBufferEnd = oscBuffer + 2 * numSamples;
-					do {
-						int32_t out = multiply_32x32_rshift32_rounded(multiply_32x32_rshift32(*input0, *input1),
-						                                              amplitudeForRingMod);
-						*output++ += multiply_32x32_rshift32(out, unisonAmplitudeL) << 2;
-						*output++ += multiply_32x32_rshift32(out, unisonAmplitudeR) << 2;
-						input0++;
-						input1++;
-					} while (output != oscBufferEnd);
-				}
-				else {
-					int32_t const* const oscBufferEnd = oscBuffer + numSamples;
-					do {
-						*output += multiply_32x32_rshift32_rounded(multiply_32x32_rshift32(*input0, *input1),
-						                                           amplitudeForRingMod);
-						input0++;
-						input1++;
-					} while (++output != oscBufferEnd);
-				}
-			}
-
-			// Or if FM
-			else {
+			// FM
+			{
 
 				// If overall pitch adjusted, adjust modulator pitches
 				uint32_t phaseIncrementModulator[kNumModulators];
@@ -2111,15 +1839,28 @@ carriersDone: {}
 				}
 			}
 		}
-
-skipUnisonPart: {}
 	}
 
 	if (didStereoTempBuffer) {
 		int32_t* const oscBufferEnd = oscBuffer + (numSamples << 1);
 		// fold
 		if (paramFinalValues[params::LOCAL_FOLD] > 0) {
-			dsp::foldBufferPolyApproximation(oscBuffer, oscBufferEnd, paramFinalValues[params::LOCAL_FOLD]);
+			q31_t foldSymmetry = paramFinalValues[params::LOCAL_FOLD_SYMMETRY];
+			if (foldSymmetry != 0) {
+				wavefoldDcBlockActive = true;
+			}
+			if (foldSymmetry != 0 || sound.foldTone != 0 || wavefoldDcBlockActive) {
+				// Interleaved stereo: each channel keeps its own Tone crossover and DC blocker state.
+				dsp::foldBufferWithSymmetryAndTone(oscBuffer, oscBufferEnd, 2, paramFinalValues[params::LOCAL_FOLD],
+				                                   foldSymmetry, sound.foldTone, wavefoldDcBlockActive,
+				                                   wavefoldState[0]);
+				dsp::foldBufferWithSymmetryAndTone(oscBuffer + 1, oscBufferEnd, 2, paramFinalValues[params::LOCAL_FOLD],
+				                                   foldSymmetry, sound.foldTone, wavefoldDcBlockActive,
+				                                   wavefoldState[1]);
+			}
+			else {
+				dsp::foldBufferPolyApproximation(oscBuffer, oscBufferEnd, paramFinalValues[params::LOCAL_FOLD]);
+			}
 		}
 
 		// Sine Shaper (per-voice, mod-matrix routable drive, harmonic, and twist)
@@ -2142,6 +1883,22 @@ skipUnisonPart: {}
 			std::span<StereoSample> stereoBuffer(reinterpret_cast<StereoSample*>(oscBuffer), numSamples);
 			// Compute note frequency for LPF cutoff scaling
 			float noteFreqHz = 440.0f * powf(2.0f, (noteCodeAfterArpeggiation - 69) / 12.0f);
+
+			// Tone: split off a clean low end before the shaper sees anything, so bass never gets
+			// waveshaped regardless of Drive/Mix/extras (see shaperCleanLowEnd(), dsp/shaper_buffer.h).
+			static std::array<StereoSample, SSI_TX_BUFFER_NUM_SAMPLES> toneLowBufferStereo;
+			uint8_t tone = sound.shaper.tone;
+			if (tone > 0) {
+				for (int32_t i = 0; i < numSamples; i++) {
+					q31_t lowL = dsp::shaperCleanLowEnd(stereoBuffer[i].l, &sound.shaper.toneLowStateL, tone);
+					q31_t lowR = dsp::shaperCleanLowEnd(stereoBuffer[i].r, &sound.shaper.toneLowStateR, tone);
+					toneLowBufferStereo[i].l = lowL;
+					toneLowBufferStereo[i].r = lowR;
+					stereoBuffer[i].l = subtract_saturate(stereoBuffer[i].l, lowL);
+					stereoBuffer[i].r = subtract_saturate(stereoBuffer[i].r, lowR);
+				}
+			}
+
 			dsp::shapeBufferInt32(stereoBuffer, sound.shaperDsp, satDrive, &sound.shaper.driveLast, satMix,
 			                      &sound.shaper.threshold32Last, &sound.shaper.blendSlopeLast_Q8,
 			                      0, // filterGain: 0 = FM mode (no gain compensation for now)
@@ -2150,10 +1907,21 @@ skipUnisonPart: {}
 			                      &sound.shaper.zcCountR, &sound.shaper.subSignL, &sound.shaper.subSignR,
 			                      sound.shaper.extrasMask, sound.shaper.gammaPhase, &sound.shaper.slewedL,
 			                      &sound.shaper.slewedR, noteFreqHz);
+
+			if (tone > 0) {
+				for (int32_t i = 0; i < numSamples; i++) {
+					stereoBuffer[i].l = add_saturate(stereoBuffer[i].l, toneLowBufferStereo[i].l);
+					stereoBuffer[i].r = add_saturate(stereoBuffer[i].r, toneLowBufferStereo[i].r);
+				}
+			}
 		}
 
 		// Filters
 		filterSet.renderLongStereo(oscBuffer, oscBufferEnd);
+
+		// Computed once per buffer (involves a single exp2f), not per sample - see
+		// alphaForCrossoverFreq()'s own comment in dsp/mono_maker.hpp.
+		q31_t monoMakerAlpha = dsp::alphaForCrossoverFreq(sound.subBassMonoFreq);
 
 		// No clipping
 		if (!sound.clippingAmount) {
@@ -2171,6 +1939,9 @@ skipUnisonPart: {}
 					outputSampleL = multiply_32x32_rshift32_rounded(outputSampleL, overallOscAmplitudeNow) << 1;
 					outputSampleR = multiply_32x32_rshift32_rounded(outputSampleR, overallOscAmplitudeNow) << 1;
 				}
+
+				dsp::monoizeSubBass(outputSampleL, outputSampleR, monoMakerState[0], monoMakerState[1],
+				                    sound.subBassMonoAmount, monoMakerAlpha, &outputSampleL, &outputSampleR);
 
 				// Write to the output buffer, panning or not
 				if (doPanning) {
@@ -2202,8 +1973,13 @@ skipUnisonPart: {}
 					outputSampleR = multiply_32x32_rshift32_rounded(outputSampleR, overallOscAmplitudeNow) << 1;
 				}
 
-				sound.saturate(&outputSampleL, &lastSaturationTanHWorkingValue[0], shiftAmount);
-				sound.saturate(&outputSampleR, &lastSaturationTanHWorkingValue[1], shiftAmount);
+				sound.saturate(&outputSampleL, &lastSaturationTanHWorkingValue[0], shiftAmount,
+				               &lastSaturationToneState[0]);
+				sound.saturate(&outputSampleR, &lastSaturationTanHWorkingValue[1], shiftAmount,
+				               &lastSaturationToneState[1]);
+
+				dsp::monoizeSubBass(outputSampleL, outputSampleR, monoMakerState[0], monoMakerState[1],
+				                    sound.subBassMonoAmount, monoMakerAlpha, &outputSampleL, &outputSampleR);
 
 				// Write to the output buffer, panning or not
 				if (doPanning) {
@@ -2233,8 +2009,18 @@ skipUnisonPart: {}
 		// wavefolding pre filter
 		if (paramFinalValues[params::LOCAL_FOLD] > 0) {
 			q31_t foldAmount = paramFinalValues[params::LOCAL_FOLD];
+			q31_t foldSymmetry = paramFinalValues[params::LOCAL_FOLD_SYMMETRY];
+			if (foldSymmetry != 0) {
+				wavefoldDcBlockActive = true;
+			}
 
-			dsp::foldBufferPolyApproximation(oscBuffer, oscBufferEnd, foldAmount);
+			if (foldSymmetry != 0 || sound.foldTone != 0 || wavefoldDcBlockActive) {
+				dsp::foldBufferWithSymmetryAndTone(oscBuffer, oscBufferEnd, 1, foldAmount, foldSymmetry, sound.foldTone,
+				                                   wavefoldDcBlockActive, wavefoldState[0]);
+			}
+			else {
+				dsp::foldBufferPolyApproximation(oscBuffer, oscBufferEnd, foldAmount);
+			}
 		}
 
 		// Sine Shaper (per-voice, mod-matrix routable drive, harmonic, and twist) - mono path
@@ -2260,11 +2046,30 @@ skipUnisonPart: {}
 			// Use ShaperModState to group L-channel state for mono processing
 			dsp::ShaperModState state{&sound.shaper.prevSampleL, &sound.shaper.slewedL, &sound.shaper.prevScaledInputL,
 			                          &sound.shaper.zcCountL, &sound.shaper.subSignL};
+
+			// Tone: split off a clean low end before the shaper sees anything, so bass never gets
+			// waveshaped regardless of Drive/Mix/extras (see shaperCleanLowEnd(), dsp/shaper_buffer.h).
+			static std::array<q31_t, SSI_TX_BUFFER_NUM_SAMPLES> toneLowBufferMono;
+			uint8_t tone = sound.shaper.tone;
+			if (tone > 0) {
+				for (int32_t i = 0; i < numSamples; i++) {
+					q31_t low = dsp::shaperCleanLowEnd(monoBuffer[i], &sound.shaper.toneLowStateL, tone);
+					toneLowBufferMono[i] = low;
+					monoBuffer[i] = subtract_saturate(monoBuffer[i], low);
+				}
+			}
+
 			dsp::shapeBufferInt32(monoBuffer, sound.shaperDsp, satDrive, &sound.shaper.driveLast, satMix,
 			                      &sound.shaper.threshold32Last, &sound.shaper.blendSlopeLast_Q8,
 			                      0, // filterGain: 0 = FM mode (no gain compensation for now)
 			                      sound.hasFilters(), state, sound.shaper.extrasMask, sound.shaper.gammaPhase,
 			                      noteFreqHz);
+
+			if (tone > 0) {
+				for (int32_t i = 0; i < numSamples; i++) {
+					monoBuffer[i] = add_saturate(monoBuffer[i], toneLowBufferMono[i]);
+				}
+			}
 		}
 
 		filterSet.renderLong(oscBuffer, oscBufferEnd, numSamples);
@@ -2314,7 +2119,8 @@ skipUnisonPart: {}
 					output = multiply_32x32_rshift32_rounded(output, overallOscAmplitudeNow) << 1;
 				}
 
-				sound.saturate(&output, &lastSaturationTanHWorkingValue[0], clippingAmount);
+				sound.saturate(&output, &lastSaturationTanHWorkingValue[0], clippingAmount,
+				               &lastSaturationToneState[0]);
 
 				if (soundRenderingInStereo) {
 					if (doPanning) {
@@ -2643,7 +2449,7 @@ void Voice::renderBasicSource(Sound& sound, ParamManagerForTimeline* paramManage
 		sourceAmplitude += amplitudeIncrement * samplesToSkip;
 	}
 
-	// IIR smooth crossfade position for PHI_MORPH / PHI_WEAVE (once per buffer, before unison loop)
+	// IIR smooth crossfade position for the phi family (once per buffer, before unison loop)
 	if (sound.sources[s].oscType == OscType::PHI_MORPH && sound.sources[s].phiMorphCache) {
 		auto& smoothed = sound.sources[s].phiMorphCache->smoothedCrossfade;
 		q31_t target = sourceWaveIndexesLastTime[s];
@@ -2655,52 +2461,8 @@ void Voice::renderBasicSource(Sound& sound, ParamManagerForTimeline* paramManage
 			smoothed += (std::abs(diff) < 256) ? diff : (diff >> 2);
 		}
 	}
-	else if (sound.sources[s].oscType == OscType::PHI_WEAVE && sound.sources[s].phiWeaveCache) {
-		auto& smoothed = sound.sources[s].phiWeaveCache->smoothedCrossfade;
-		q31_t target = sourceWaveIndexesLastTime[s];
-		if (smoothed == INT32_MIN) {
-			smoothed = target;
-		}
-		else if (smoothed != target) {
-			q31_t diff = target - smoothed;
-			smoothed += (std::abs(diff) < 256) ? diff : (diff >> 2);
-		}
-	}
-	else if (sound.sources[s].oscType == OscType::PHI_VOX && sound.sources[s].phiVoxCache) {
-		auto& smoothed = sound.sources[s].phiVoxCache->smoothedCrossfade;
-		q31_t target = sourceWaveIndexesLastTime[s];
-		if (smoothed == INT32_MIN) {
-			smoothed = target;
-		}
-		else if (smoothed != target) {
-			q31_t diff = target - smoothed;
-			smoothed += (std::abs(diff) < 256) ? diff : (diff >> 2);
-		}
-	}
 	else if (sound.sources[s].oscType == OscType::PHI_SWARM && sound.sources[s].phiSwarmCache) {
 		auto& smoothed = sound.sources[s].phiSwarmCache->smoothedCrossfade;
-		q31_t target = sourceWaveIndexesLastTime[s];
-		if (smoothed == INT32_MIN) {
-			smoothed = target;
-		}
-		else if (smoothed != target) {
-			q31_t diff = target - smoothed;
-			smoothed += (std::abs(diff) < 256) ? diff : (diff >> 2);
-		}
-	}
-	else if (sound.sources[s].oscType == OscType::PHI_GENDY && sound.sources[s].phiGendyCache) {
-		auto& smoothed = sound.sources[s].phiGendyCache->smoothedCrossfade;
-		q31_t target = sourceWaveIndexesLastTime[s];
-		if (smoothed == INT32_MIN) {
-			smoothed = target;
-		}
-		else if (smoothed != target) {
-			q31_t diff = target - smoothed;
-			smoothed += (std::abs(diff) < 256) ? diff : (diff >> 2);
-		}
-	}
-	else if (sound.sources[s].oscType == OscType::PHI_STAIR && sound.sources[s].phiStairCache) {
-		auto& smoothed = sound.sources[s].phiStairCache->smoothedCrossfade;
 		q31_t target = sourceWaveIndexesLastTime[s];
 		if (smoothed == INT32_MIN) {
 			smoothed = target;
@@ -3390,50 +3152,10 @@ dontUseCache: {}
 				}
 			}
 		}
-		else if (sound.sources[s].oscType == OscType::DX7) {
-			static int32_t uniBuf[DX_MAX_N] __attribute__((aligned(CACHE_LINE_SIZE)));
-			memset(uniBuf, 0, sizeof uniBuf);
-
-			// TODO: 1. use existing int log function?
-			//       2. going from phase to logs (and then let MSFA turn those logs into phase again) is sus af
-			//         rework MSFA to use our phase incerements directly?
-			int logpitch = (int)(log2f(phaseIncrement) * (1 << 24));
-			int adjpitch = logpitch - 278023814;
-
-			DxPatch* patch = sound.sources[s].ensureDxPatch();
-			DxVoiceCtrl ctrl{};
-			ctrl.ampmod = (paramFinalValues[params::LOCAL_OSC_A_PHASE_WIDTH + s] + unisonPhaseWidthOffset) >> 13;
-			// ctrl.ratemod = paramFinalValues[params::LOCAL_CARRIER_0_FEEDBACK + s] >> 16;
-			if (sound.sources[s].dxPatchChanged) {
-				unisonParts[u].sources[s].dxVoice->update(*patch, noteCodeAfterArpeggiation);
-			}
-			bool active = unisonParts[u].sources[s].dxVoice->compute(uniBuf, numSamples, adjpitch, patch, &ctrl);
-			if (!active) {
-				goto instantUnassign;
-			}
-
-			int32_t sourceAmplitudeNow = effSourceAmplitude;
-			if (stereoBuffer) {
-				for (int i = 0; i < numSamples; i++) {
-					sourceAmplitudeNow += effAmplitudeIncrement;
-					int amplified = multiply_32x32_rshift32(uniBuf[i], sourceAmplitudeNow) << 6;
-					oscBuffer[(i << 1)] += multiply_32x32_rshift32(amplified, amplitudeL) << 2;
-					oscBuffer[(i << 1) + 1] += multiply_32x32_rshift32(amplified, amplitudeR) << 2;
-				}
-			}
-			else {
-				for (int i = 0; i < numSamples; i++) {
-					sourceAmplitudeNow += effAmplitudeIncrement;
-					oscBuffer[i] += multiply_32x32_rshift32(uniBuf[i], sourceAmplitudeNow) << 6;
-				}
-			}
-
-			// Or regular wave
-		}
 		else if (sound.sources[s].oscType == OscType::PHI_MORPH) {
 			auto& source = sound.sources[s];
-			if (!source.phiMorphCache) {
-				source.phiMorphCache = new dsp::PhiMorphCache{};
+			if (!source.ensurePhiCache()) {
+				continue; // Out of memory: silence for this buffer rather than a TERM freeze
 			}
 			auto& cache = *source.phiMorphCache;
 			float effOffA = source.phiMorphPhaseOffsetA + source.phiMorphGamma;
@@ -3475,109 +3197,10 @@ dontUseCache: {}
 				}
 			}
 		}
-		else if (sound.sources[s].oscType == OscType::PHI_WEAVE) {
-			auto& source = sound.sources[s];
-			if (!source.phiWeaveCache) {
-				source.phiWeaveCache = new dsp::PhiWeaveCache{};
-			}
-			auto& cache = *source.phiWeaveCache;
-			float effOffA = source.phiWeavePhaseOffsetA + source.phiWeaveGamma;
-			float effOffB = source.phiWeavePhaseOffsetB + source.phiWeaveGamma;
-			if (cache.needsUpdate(source.phiWeaveZoneA, source.phiWeaveZoneB, effOffA, effOffB)) {
-				cache.bankA = dsp::buildPhiWeaveParams(source.phiWeaveZoneA, effOffA);
-				cache.bankB = dsp::buildPhiWeaveParams(source.phiWeaveZoneB, effOffB);
-				cache.effCfCached = -2.0f; // Invalidate the effective-law cache
-				cache.prevZoneA = source.phiWeaveZoneA;
-				cache.prevZoneB = source.phiWeaveZoneB;
-				cache.prevPhaseOffsetA = effOffA;
-				cache.prevPhaseOffsetB = effOffB;
-			}
-
-			q31_t crossfade = cache.smoothedCrossfade + unisonWaveIndexOffset;
-
-			int32_t* renderBuffer = oscBuffer;
-			int32_t* renderBufferR = nullptr;
-			bool phiStereo = stereoBuffer && source.phiStereoActive();
-			if (stereoBuffer) {
-				renderBuffer = spareRenderingBuffer[2];
-				memset(renderBuffer, 0, SSI_TX_BUFFER_NUM_SAMPLES * sizeof(int32_t));
-				if (phiStereo) {
-					renderBufferR = spareRenderingBuffer[3];
-					memset(renderBufferR, 0, SSI_TX_BUFFER_NUM_SAMPLES * sizeof(int32_t));
-				}
-			}
-
-			int32_t* oscBufferEnd = renderBuffer + numSamples;
-
-			uint32_t pulseWidth = (uint32_t)lshiftAndSaturate<1>(paramFinalValues[params::LOCAL_OSC_A_PHASE_WIDTH + s]
-			                                                     + unisonPhaseWidthOffset);
-
-			uint32_t effectiveRetriggerPhase = sound.oscRetriggerPhase[s]
-			                                   + static_cast<uint32_t>(paramFinalValues[params::LOCAL_OSC_A_PHASE + s])
-			                                   + static_cast<uint32_t>(unisonPhaseOffset);
-			dsp::renderPhiWeave(cache, renderBuffer, oscBufferEnd, numSamples, phaseIncrement,
-			                    &unisonParts[u].sources[s].oscPos, effectiveRetriggerPhase, effSourceAmplitude,
-			                    effAmplitudeIncrement, true, crossfade, pulseWidth, renderBufferR,
-			                    source.phiStereoZone);
-
-			if (stereoBuffer) {
-				const int32_t* rightSrc = phiStereo ? renderBufferR : renderBuffer;
-				for (int32_t i = 0; i < numSamples; i++) {
-					oscBuffer[(i << 1)] += multiply_32x32_rshift32(renderBuffer[i], amplitudeL) << 2;
-					oscBuffer[(i << 1) + 1] += multiply_32x32_rshift32(rightSrc[i], amplitudeR) << 2;
-				}
-			}
-		}
-		else if (sound.sources[s].oscType == OscType::PHI_VOX) {
-			auto& source = sound.sources[s];
-			if (!source.phiVoxCache) {
-				source.phiVoxCache = new dsp::PhiVoxCache{};
-			}
-			auto& cache = *source.phiVoxCache;
-			float effOffA = source.phiVoxPhaseOffsetA + source.phiVoxGamma;
-			float effOffB = source.phiVoxPhaseOffsetB + source.phiVoxGamma;
-			if (cache.needsUpdate(source.phiVoxZoneA, source.phiVoxZoneB, effOffA, effOffB)) {
-				cache.bankA = dsp::buildPhiVoxParams(source.phiVoxZoneA, effOffA);
-				cache.bankB = dsp::buildPhiVoxParams(source.phiVoxZoneB, effOffB);
-				cache.prevZoneA = source.phiVoxZoneA;
-				cache.prevZoneB = source.phiVoxZoneB;
-				cache.prevPhaseOffsetA = effOffA;
-				cache.prevPhaseOffsetB = effOffB;
-				cache.prevCrossfade = INT32_MIN; // Force effective table rebuild
-			}
-
-			q31_t crossfade = cache.smoothedCrossfade + unisonWaveIndexOffset;
-
-			int32_t* renderBuffer = oscBuffer;
-			if (stereoBuffer) {
-				renderBuffer = spareRenderingBuffer[2];
-				memset(renderBuffer, 0, SSI_TX_BUFFER_NUM_SAMPLES * sizeof(int32_t));
-			}
-
-			int32_t* oscBufferEnd = renderBuffer + numSamples;
-
-			uint32_t pulseWidth = (uint32_t)lshiftAndSaturate<1>(paramFinalValues[params::LOCAL_OSC_A_PHASE_WIDTH + s]
-			                                                     + unisonPhaseWidthOffset);
-
-			uint32_t effectiveRetriggerPhase = sound.oscRetriggerPhase[s]
-			                                   + static_cast<uint32_t>(paramFinalValues[params::LOCAL_OSC_A_PHASE + s])
-			                                   + static_cast<uint32_t>(unisonPhaseOffset);
-			dsp::renderPhiVox(cache, renderBuffer, oscBufferEnd, numSamples, phaseIncrement,
-			                  &unisonParts[u].sources[s].oscPos, &unisonParts[u].sources[s].prevPhaseScaler,
-			                  effectiveRetriggerPhase, effSourceAmplitude, effAmplitudeIncrement, true, crossfade,
-			                  pulseWidth, source.phiVoxTracking);
-
-			if (stereoBuffer) {
-				for (int32_t i = 0; i < numSamples; i++) {
-					oscBuffer[(i << 1)] += multiply_32x32_rshift32(renderBuffer[i], amplitudeL) << 2;
-					oscBuffer[(i << 1) + 1] += multiply_32x32_rshift32(renderBuffer[i], amplitudeR) << 2;
-				}
-			}
-		}
 		else if (sound.sources[s].oscType == OscType::PHI_SWARM) {
 			auto& source = sound.sources[s];
-			if (!source.phiSwarmCache) {
-				source.phiSwarmCache = new dsp::PhiSwarmCache{};
+			if (!source.ensurePhiCache()) {
+				continue; // Out of memory: silence for this buffer rather than a TERM freeze
 			}
 			auto& cache = *source.phiSwarmCache;
 			float effOffA = source.phiSwarmPhaseOffsetA + source.phiSwarmGamma;
@@ -3618,112 +3241,6 @@ dontUseCache: {}
 			                    &unisonParts[u].sources[s].oscPos, &unisonParts[u].sources[s].prevPhaseScaler,
 			                    effectiveRetriggerPhase, effSourceAmplitude, effAmplitudeIncrement, true, crossfade,
 			                    pulseWidth, renderBufferR, source.phiStereoZone);
-
-			if (stereoBuffer) {
-				const int32_t* rightSrc = phiStereo ? renderBufferR : renderBuffer;
-				for (int32_t i = 0; i < numSamples; i++) {
-					oscBuffer[(i << 1)] += multiply_32x32_rshift32(renderBuffer[i], amplitudeL) << 2;
-					oscBuffer[(i << 1) + 1] += multiply_32x32_rshift32(rightSrc[i], amplitudeR) << 2;
-				}
-			}
-		}
-		else if (sound.sources[s].oscType == OscType::PHI_GENDY) {
-			auto& source = sound.sources[s];
-			if (!source.phiGendyCache) {
-				source.phiGendyCache = new dsp::PhiGendyCache{};
-			}
-			auto& cache = *source.phiGendyCache;
-			float effOffA = source.phiGendyPhaseOffsetA + source.phiGendyGamma;
-			float effOffB = source.phiGendyPhaseOffsetB + source.phiGendyGamma;
-			if (cache.needsUpdate(source.phiGendyZoneA, source.phiGendyZoneB, effOffA, effOffB)) {
-				cache.bankA = dsp::buildPhiGendyParams(source.phiGendyZoneA, effOffA);
-				cache.bankB = dsp::buildPhiGendyParams(source.phiGendyZoneB, effOffB);
-				cache.effCfCached = -2.0f; // Invalidate the effective-law cache
-				cache.prevZoneA = source.phiGendyZoneA;
-				cache.prevZoneB = source.phiGendyZoneB;
-				cache.prevPhaseOffsetA = effOffA;
-				cache.prevPhaseOffsetB = effOffB;
-			}
-
-			q31_t crossfade = cache.smoothedCrossfade + unisonWaveIndexOffset;
-
-			int32_t* renderBuffer = oscBuffer;
-			int32_t* renderBufferR = nullptr;
-			bool phiStereo = stereoBuffer && source.phiStereoActive();
-			if (stereoBuffer) {
-				renderBuffer = spareRenderingBuffer[2];
-				memset(renderBuffer, 0, SSI_TX_BUFFER_NUM_SAMPLES * sizeof(int32_t));
-				if (phiStereo) {
-					renderBufferR = spareRenderingBuffer[3];
-					memset(renderBufferR, 0, SSI_TX_BUFFER_NUM_SAMPLES * sizeof(int32_t));
-				}
-			}
-
-			int32_t* oscBufferEnd = renderBuffer + numSamples;
-
-			uint32_t pulseWidth = (uint32_t)lshiftAndSaturate<1>(paramFinalValues[params::LOCAL_OSC_A_PHASE_WIDTH + s]
-			                                                     + unisonPhaseWidthOffset);
-
-			uint32_t effectiveRetriggerPhase = sound.oscRetriggerPhase[s]
-			                                   + static_cast<uint32_t>(paramFinalValues[params::LOCAL_OSC_A_PHASE + s])
-			                                   + static_cast<uint32_t>(unisonPhaseOffset);
-			dsp::renderPhiGendy(cache, renderBuffer, oscBufferEnd, numSamples, phaseIncrement,
-			                    &unisonParts[u].sources[s].oscPos, effectiveRetriggerPhase, effSourceAmplitude,
-			                    effAmplitudeIncrement, true, crossfade, pulseWidth, renderBufferR,
-			                    source.phiStereoZone);
-
-			if (stereoBuffer) {
-				const int32_t* rightSrc = phiStereo ? renderBufferR : renderBuffer;
-				for (int32_t i = 0; i < numSamples; i++) {
-					oscBuffer[(i << 1)] += multiply_32x32_rshift32(renderBuffer[i], amplitudeL) << 2;
-					oscBuffer[(i << 1) + 1] += multiply_32x32_rshift32(rightSrc[i], amplitudeR) << 2;
-				}
-			}
-		}
-		else if (sound.sources[s].oscType == OscType::PHI_STAIR) {
-			auto& source = sound.sources[s];
-			if (!source.phiStairCache) {
-				source.phiStairCache = new dsp::PhiStairCache{};
-			}
-			auto& cache = *source.phiStairCache;
-			float effOffA = source.phiStairPhaseOffsetA + source.phiStairGamma;
-			float effOffB = source.phiStairPhaseOffsetB + source.phiStairGamma;
-			if (cache.needsUpdate(source.phiStairZoneA, source.phiStairZoneB, effOffA, effOffB)) {
-				cache.bankA = dsp::buildPhiStairParams(source.phiStairZoneA, effOffA);
-				cache.bankB = dsp::buildPhiStairParams(source.phiStairZoneB, effOffB);
-				cache.prevZoneA = source.phiStairZoneA;
-				cache.prevZoneB = source.phiStairZoneB;
-				cache.prevPhaseOffsetA = effOffA;
-				cache.prevPhaseOffsetB = effOffB;
-				cache.effCfCached = -2.0f; // Force table rebuild
-			}
-
-			q31_t crossfade = cache.smoothedCrossfade + unisonWaveIndexOffset;
-
-			int32_t* renderBuffer = oscBuffer;
-			int32_t* renderBufferR = nullptr;
-			bool phiStereo = stereoBuffer && source.phiStereoActive();
-			if (stereoBuffer) {
-				renderBuffer = spareRenderingBuffer[2];
-				memset(renderBuffer, 0, SSI_TX_BUFFER_NUM_SAMPLES * sizeof(int32_t));
-				if (phiStereo) {
-					renderBufferR = spareRenderingBuffer[3];
-					memset(renderBufferR, 0, SSI_TX_BUFFER_NUM_SAMPLES * sizeof(int32_t));
-				}
-			}
-
-			int32_t* oscBufferEnd = renderBuffer + numSamples;
-
-			uint32_t pulseWidth = (uint32_t)lshiftAndSaturate<1>(paramFinalValues[params::LOCAL_OSC_A_PHASE_WIDTH + s]
-			                                                     + unisonPhaseWidthOffset);
-
-			uint32_t effectiveRetriggerPhase = sound.oscRetriggerPhase[s]
-			                                   + static_cast<uint32_t>(paramFinalValues[params::LOCAL_OSC_A_PHASE + s])
-			                                   + static_cast<uint32_t>(unisonPhaseOffset);
-			dsp::renderPhiStair(cache, renderBuffer, oscBufferEnd, numSamples, phaseIncrement,
-			                    &unisonParts[u].sources[s].oscPos, effectiveRetriggerPhase, effSourceAmplitude,
-			                    effAmplitudeIncrement, true, crossfade, pulseWidth, renderBufferR,
-			                    source.phiStereoZone);
 
 			if (stereoBuffer) {
 				const int32_t* rightSrc = phiStereo ? renderBufferR : renderBuffer;
@@ -3802,41 +3319,29 @@ bool Voice::doFastRelease(uint32_t releaseIncrement) {
 	}
 }
 
-bool Voice::forceNormalRelease() {
-	if (doneFirstRender) {
-		// If no release-stage, we'll stop as soon as we can
-		if (!hasReleaseStage()) {
-			envelopes[0].unconditionalRelease(EnvelopeStage::FAST_RELEASE, SOFT_CULL_INCREMENT);
-		}
-		// otherwise we'll just let it get there on its own
-		else {
-			envelopes[0].unconditionalRelease();
-		}
-		return true;
-	}
-
-	// Or if first render not done yet, we actually don't want to hear anything at all, so just unassign it
-	else {
+bool Voice::speedUpRelease(uint32_t minFastReleaseIncrement) {
+	if (!doneFirstRender) {
 		return false;
 	}
-}
 
-bool Voice::speedUpRelease() {
 	auto stage = envelopes[0].state;
 	if (stage == EnvelopeStage::RELEASE) {
 		auto currentRelease = paramFinalValues[params::LOCAL_ENV_0_RELEASE];
-		envelopes[0].unconditionalRelease(EnvelopeStage::FAST_RELEASE, currentRelease * 2);
+		envelopes[0].unconditionalRelease(EnvelopeStage::FAST_RELEASE,
+		                                  std::max<uint32_t>(currentRelease * 2, minFastReleaseIncrement));
 		return true;
 	}
 	else if (stage == EnvelopeStage::FAST_RELEASE) {
 		auto currentRelease = envelopes[0].fastReleaseIncrement;
-		envelopes[0].unconditionalRelease(EnvelopeStage::FAST_RELEASE, currentRelease * 2);
+		envelopes[0].unconditionalRelease(EnvelopeStage::FAST_RELEASE,
+		                                  std::max<uint32_t>(currentRelease * 2, minFastReleaseIncrement));
 		return true;
 	}
 
-	// Or if we're not releasing just start the release
+	// Cull-driven release must not inherit a patch's long musical release, or culled voices can stack up.
 	else {
-		return forceNormalRelease();
+		envelopes[0].unconditionalRelease(EnvelopeStage::FAST_RELEASE, minFastReleaseIncrement);
+		return true;
 	}
 }
 

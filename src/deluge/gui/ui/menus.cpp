@@ -63,9 +63,6 @@
 #include "gui/menu_item/delay/analog.h"
 #include "gui/menu_item/delay/ping_pong.h"
 #include "gui/menu_item/delay/sync.h"
-#include "gui/menu_item/dx/browse.h"
-#include "gui/menu_item/dx/engine_select.h"
-#include "gui/menu_item/dx/global_params.h"
 #include "gui/menu_item/edit_name.h"
 #include "gui/menu_item/envelope/envelope_menu.h"
 #include "gui/menu_item/envelope/segment.h"
@@ -83,9 +80,12 @@
 #include "gui/menu_item/fx/disperser.h"
 #include "gui/menu_item/fx/eroder.h"
 #include "gui/menu_item/fx/harm.h"
+#include "gui/menu_item/fx/mono_maker.h"
+#include "gui/menu_item/fx/saturation_type.h"
 #include "gui/menu_item/fx/shaper.h"
 #include "gui/menu_item/fx/sine_shaper.h"
 #include "gui/menu_item/fx/utility.h"
+#include "gui/menu_item/fx/wavefold.h"
 #include "gui/menu_item/gate/mode.h"
 #include "gui/menu_item/gate/off_time.h"
 #include "gui/menu_item/gate/selection.h"
@@ -95,6 +95,7 @@
 #include "gui/menu_item/integer_range.h"
 #include "gui/menu_item/key_range.h"
 #include "gui/menu_item/keyboard/layout.h"
+#include "gui/menu_item/lfo/shape_editor.h"
 #include "gui/menu_item/lfo/sync.h"
 #include "gui/menu_item/lfo/type.h"
 #include "gui/menu_item/master_transpose.h"
@@ -149,9 +150,9 @@
 #include "gui/menu_item/note_row/iterance_step_toggle.h"
 #include "gui/menu_item/note_row/probability.h"
 #include "gui/menu_item/osc/audio_recorder.h"
+#include "gui/menu_item/osc/click_sample.h"
 #include "gui/menu_item/osc/phi_morph_zone.h"
 #include "gui/menu_item/osc/phi_stereo_zone.h"
-#include "gui/menu_item/osc/phi_vox_tracking.h"
 #include "gui/menu_item/osc/pulse_width.h"
 #include "gui/menu_item/osc/retrigger_phase.h"
 #include "gui/menu_item/osc/source/feedback.h"
@@ -507,6 +508,7 @@ eq::EqUnpatchedParam bassFreqMenu{STRING_FOR_BASS_FREQUENCY, STRING_FOR_BASS_FRE
                                   params::UNPATCHED_BASS_FREQ};
 eq::EqUnpatchedParam trebleFreqMenu{STRING_FOR_TREBLE_FREQUENCY, STRING_FOR_TREBLE_FREQUENCY_SHORT,
                                     params::UNPATCHED_TREBLE_FREQ};
+eq::EqUnpatchedParam midMenu{STRING_FOR_MID, params::UNPATCHED_MID};
 
 eq::EqMenu eqMenu{
     STRING_FOR_EQ,
@@ -515,6 +517,7 @@ eq::EqMenu eqMenu{
         &trebleMenu,
         &bassFreqMenu,
         &trebleFreqMenu,
+        &midMenu,
     },
 };
 
@@ -724,6 +727,34 @@ UnpatchedParam srrMenu{STRING_FOR_DECIMATION, params::UNPATCHED_SAMPLE_RATE_REDU
 UnpatchedParam bitcrushMenu{STRING_FOR_BITCRUSH, params::UNPATCHED_BITCRUSHING, RenderingStyle::BAR};
 patched_param::Integer foldMenu{STRING_FOR_WAVEFOLD, STRING_FOR_WAVEFOLD, params::LOCAL_FOLD, RenderingStyle::BAR};
 
+// Saturation editor: SYNTH=Drive, KIT=Asymmetry, MIDI=Mix, CV=Tone. Uses the same HorizontalMenu
+// SYNTH/KIT/MIDI/CV -> children wiring as the envelope graph editor.
+// Uses its own Drive instance (rather than reusing clippingMenu) because a MenuItem's `parent` is
+// set dynamically to whichever HorizontalMenu it's currently a child of (HorizontalMenu::beginSession
+// sets `item->parent = this` for every child) - reusing clippingMenu here would silently steal it
+// away from soundDistortionMenu's original Saturation/Bitcrush/SRR/Fold grouping. Both instances
+// read/write the same underlying clippingAmount field, so they stay in sync automatically.
+// Like every stock pad, the Saturation pad (paramShortcutsForSounds[7][6]) points at a child (Drive), not at
+// the menu itself, and the menu sits in horizontalMenusChainForSound so maybeGetParentMenu() finds and
+// focuses it. A pad pointing straight at a HorizontalMenu that was never opened crashed when pressed with
+// another menu open: getParamKind() read the unfocused menu's current_item_ (== items.end()).
+fx::Clipping saturationDriveMenu{STRING_FOR_SATURATION};
+fx::SaturationTweak saturationTweakMenu{STRING_FOR_ASYMMETRY};
+fx::SaturationMix saturationMixMenu{STRING_FOR_MIX};
+fx::SaturationTone saturationToneMenu{STRING_FOR_TONE};
+HorizontalMenu saturationMenu{
+    STRING_FOR_SATURATION,
+    {
+        &saturationDriveMenu,
+        &saturationTweakMenu,
+        &saturationMixMenu,
+        &saturationToneMenu,
+    },
+};
+
+// Original pad/menu grouping, unchanged from stock: SYNTH=Saturation, KIT=Bitcrush, MIDI=Decimation,
+// CV=Wavefold. The new saturation type/tweak/mix editor lives on its own pad (see saturationMenu
+// above and its wiring at paramShortcutsForSounds[7][6]) instead of replacing this one.
 HorizontalMenu soundDistortionMenu{
     STRING_FOR_DISTORTION,
     {
@@ -733,6 +764,22 @@ HorizontalMenu soundDistortionMenu{
         &foldMenu,
     },
 };
+
+// Wavefold editor: Amount / Symmetry / Tone (Sound/Synth only - the fold runs per voice). The Fold pad
+// (paramShortcutsForSounds[7][7]) opens it, pressing that pad again jumps to Symmetry (second layer).
+// Uses its own Amount instance rather than reusing foldMenu, for the same parent-stealing reason as
+// saturationDriveMenu; both write LOCAL_FOLD, so they stay in sync.
+patched_param::Integer wavefoldAmountMenu{STRING_FOR_WAVEFOLD, STRING_FOR_WAVEFOLD, params::LOCAL_FOLD,
+                                          RenderingStyle::BAR};
+fx::WavefoldSymmetry wavefoldSymmetryMenu{STRING_FOR_WAVEFOLD_SYMMETRY, STRING_FOR_WAVEFOLD_SYMMETRY,
+                                          params::LOCAL_FOLD_SYMMETRY};
+fx::WavefoldTone wavefoldToneMenu{STRING_FOR_TONE};
+HorizontalMenu wavefoldMenu{STRING_FOR_WAVEFOLD, {&wavefoldAmountMenu, &wavefoldSymmetryMenu, &wavefoldToneMenu}};
+
+// Bass Mono - narrows stereo width below a crossover towards mono (Sound/Synth only)
+fx::BassMono bassMonoMenu{STRING_FOR_BASS_MONO};
+fx::BassMonoFreq bassMonoFreqMenu{STRING_FOR_BASS_MONO_FREQ};
+HorizontalMenu bassMonoHorizontal{STRING_FOR_BASS_MONO, {&bassMonoMenu, &bassMonoFreqMenu}};
 
 // Sine Shaper - sinusoidal waveshaper distortion
 fx::DynamicsPatchedParam sineShaperDriveMenu{STRING_FOR_SINE_SHAPER_DRIVE, STRING_FOR_SINE_SHAPER_DRIVE,
@@ -753,10 +800,11 @@ fx::TableShaperShapeX shaperShapeXMenu{STRING_FOR_SHAPER_SHAPE_X};
 fx::TableShaperShapeY shaperShapeYMenu{STRING_FOR_SHAPER_SHAPE_Y};
 fx::TableShaperMix shaperMixMenu{STRING_FOR_SHAPER_MIX, STRING_FOR_SHAPER_MIX, params::LOCAL_TABLE_SHAPER_MIX,
                                  RenderingStyle::BAR};
+fx::TableShaperTone shaperToneMenu{STRING_FOR_SHAPER_TONE, STRING_FOR_SHAPER_TONE};
 
 HorizontalMenu tableShaperSubMenu{
     STRING_FOR_TABLE_SHAPER,
-    {&shaperDriveMenu, &shaperShapeXMenu, &shaperShapeYMenu, &shaperMixMenu},
+    {&shaperDriveMenu, &shaperShapeXMenu, &shaperShapeYMenu, &shaperMixMenu, &shaperToneMenu},
 };
 
 // Automodulator (auto-wah/filter/tremolo/comb)
@@ -955,6 +1003,7 @@ eq::EqMenu globalEQMenu{
         &trebleMenu,
         &bassFreqMenu,
         &trebleFreqMenu,
+        &midMenu,
     },
 };
 
@@ -1092,14 +1141,28 @@ HorizontalMenu audioClipMasterMenu{
     {&globalLevelMenu, &globalPanMenu},
 };
 
+// Separate instance from saturationToneMenu (Sound-only) - a MenuItem's `parent` is set to
+// whichever HorizontalMenu it's currently a child of, so sharing one instance across two
+// different groupings would silently steal it from the other (see saturationDriveMenu's own
+// comment above for the full explanation). Both instances read/write the same clippingTone field.
+fx::SaturationTone audioClipSaturationToneMenu{STRING_FOR_TONE};
 HorizontalMenu audioClipDistortionMenu{
     STRING_FOR_DISTORTION,
     {
         &clippingMenu,
         &bitcrushMenu,
         &srrMenu,
+        &audioClipSaturationToneMenu,
     },
 };
+
+// Bass Mono for AudioClip/Kit global FX (e.g. Audio track input monitoring) - separate instances
+// from the Sound-only bassMonoMenu/bassMonoFreqMenu/bassMonoHorizontal, same parent-stealing
+// reason as audioClipSaturationToneMenu above. Both read/write the same subBassMonoAmount/Freq
+// fields (see GlobalEffectableForClip::renderOutput() for the DSP side).
+fx::BassMono audioClipBassMonoMenu{STRING_FOR_BASS_MONO};
+fx::BassMonoFreq audioClipBassMonoFreqMenu{STRING_FOR_BASS_MONO_FREQ};
+HorizontalMenu audioClipBassMonoHorizontal{STRING_FOR_BASS_MONO, {&audioClipBassMonoMenu, &audioClipBassMonoFreqMenu}};
 
 Submenu audioClipFXMenu{
     STRING_FOR_FX,
@@ -1111,6 +1174,7 @@ Submenu audioClipFXMenu{
         &globalModFXMenu,
         &shapingMenu,
         &audioClipDistortionMenu,
+        &audioClipBassMonoHorizontal,
         &dott_menu,
         &utilitySubMenu,
     },
@@ -1631,14 +1695,6 @@ Submenu defaultsSubmenu{
 
 // Sound editor menu -----------------------------------------------------------------------------
 
-// FM only
-std::array<MenuItem*, 3> dxMenuItems = {
-    &dxBrowseMenu,
-    &dxGlobalParams,
-    &dxEngineSelect,
-};
-menu_item::Submenu dxMenu{STRING_FOR_DX_1, dxMenuItems};
-
 // Not FM
 MasterTranspose masterTransposeMenu{STRING_FOR_MASTER_TRANSPOSE, STRING_FOR_MASTER_TRAN_MENU_TITLE};
 
@@ -1673,6 +1729,9 @@ Submenu soundFXMenu{
         &modFXMenu,
         &shapingMenu,
         &soundDistortionMenu,
+        &saturationMenu,
+        &wavefoldMenu,
+        &bassMonoHorizontal,
         &noiseMenu,
         &dott_menu,
         &harmSubMenu,
@@ -2020,7 +2079,7 @@ PLACE_SDRAM_DATA MenuItem* paramShortcutsForSounds[][kDisplayHeight] = {
     {&modulator0Volume,		&modulator0TransposeMenu,	comingSoonMenu,                 comingSoonMenu,                 &modulator0PhaseMenu,	&modulator0FeedbackMenu,	comingSoonMenu,					&sequenceDirectionMenu             },
     {&modulator1Volume,		&modulator1TransposeMenu,	comingSoonMenu,                 comingSoonMenu,                 &modulator1PhaseMenu,	&modulator1FeedbackMenu,	&modulatorDestMenu,				&stutterRateMenu                   },
     {&volumeMenu,			&masterTransposeMenu,		&vibratoMenu,                   &panMenu,                       &synthModeMenu,			&srrMenu,					&bitcrushMenu,					&clippingMenu                      },
-    {&portaMenu,				&polyphonyMenu,				&priorityMenu,                  &unisonDetuneMenu,              &numUnisonMenu,			&threshold,					nullptr,						&foldMenu                          },
+    {&portaMenu,				&polyphonyMenu,				&priorityMenu,                  &unisonDetuneMenu,              &numUnisonMenu,			&threshold,					&saturationDriveMenu,			&wavefoldAmountMenu                },
     {&env1ReleaseMenu,		&env1SustainMenu,			&env1DecayMenu,                 &env1AttackMenu,                &lpfMorphMenu,			&lpfModeMenu,				&lpfResMenu,					&lpfFreqMenu                       },
     {&env2ReleaseMenu,		&env2SustainMenu,			&env2DecayMenu,                 &env2AttackMenu,                &hpfMorphMenu,			&hpfModeMenu,				&hpfResMenu,					&hpfFreqMenu                       },
     {&sidechainReleaseMenu,	&sidechainSyncMenu,			&sidechainVolumeShortcutMenu,   &sidechainAttackMenu,           &sidechainShapeMenu,	&sidechainSendMenu,			&bassMenu,						&bassFreqMenu                      },
@@ -2039,7 +2098,7 @@ PLACE_SDRAM_DATA MenuItem* paramShortcutsForSoundsSecondLayer[][kDisplayHeight] 
     {nullptr,	        nullptr,	            nullptr,	        nullptr,	        nullptr,	                nullptr,	nullptr,	nullptr              },
     {nullptr,	        nullptr,	            nullptr,	        nullptr,	        nullptr,	                nullptr,	nullptr,	&stutterDirectionMenu},
     {nullptr,	        nullptr,	            nullptr,	        nullptr,	        nullptr,	                nullptr,	nullptr,	nullptr              },
-    {nullptr,	        &voice::polyphonicVoiceCountMenu, nullptr,  nullptr,	        &unison::stereoSpreadMenu,  &compRatio,	nullptr,	nullptr              },
+    {nullptr,	        &voice::polyphonicVoiceCountMenu, nullptr,  nullptr,	        &unison::stereoSpreadMenu,  &compRatio,	nullptr,	&wavefoldSymmetryMenu},
     {&env3ReleaseMenu,	&env3SustainMenu,	    &env3DecayMenu,	    &env3AttackMenu,	nullptr,	                nullptr,	nullptr,	nullptr              },
     {&env4ReleaseMenu,	&env4SustainMenu,	    &env4DecayMenu,	    &env4AttackMenu,	nullptr,	                nullptr,	nullptr,	nullptr              },
     {nullptr,	        nullptr,	            nullptr,	        nullptr,	        nullptr,	                nullptr,	nullptr,	nullptr              },
@@ -2109,12 +2168,54 @@ PLACE_SDRAM_DATA MenuItem* paramShortcutsForKitGlobalFX[][kDisplayHeight] = {
 
 deluge::vector<HorizontalMenu*> horizontalMenusChainForSound = {
 	&recorderMenu, &soundMasterMenuWithoutVibrato,
-	&sourceMenuGroup, &voiceMenuGroup, &envMenuGroup, &lfoMenuGroup,
+	&sourceMenuGroup,
+	&voiceMenuGroup, &envMenuGroup, &lfoMenuGroup,
 	&filtersMenuGroup, &eqMenu, &modFXMenu,
-	&reverbMenuGroup, &delayMenu, &soundDistortionMenu,
+	&reverbMenuGroup, &delayMenu, &soundDistortionMenu, &saturationMenu, &wavefoldMenu, &bassMonoHorizontal,
 	&sidechainMenu, &audioCompMenu, &stutterMenu,
 	&arpMenuGroup, &randomizerMenu
 };
+
+// Kick synth mode: envelopes 3 and 4 are pitch envelopes. Their pads (the second layer of the envelope 1 / 2 pads) open
+// the pitch envelope controls in place of attack / decay / sustain: attack -> pitch, decay -> time, sustain -> curve.
+// The noise pad's second layer opens the click sample (the noise oscillator can play a sample in Kick mode).
+namespace {
+struct KickPad {
+	uint8_t x;
+	uint8_t y;
+	MenuItem* item;
+};
+
+const KickPad kickPads[] = {
+    {8, 3, &env3KickPitchAmountMenu}, {8, 2, &env3KickPitchTimeMenu}, {8, 1, &env3KickPitchCurveMenu},
+    {9, 3, &env4KickPitchAmountMenu}, {9, 2, &env4KickPitchTimeMenu}, {9, 1, &env4KickPitchCurveMenu},
+    {2, 7, &clickSampleMenu},
+};
+} // namespace
+
+MenuItem* getKickShortcut(Sound* sound, int32_t x, int32_t y, bool secondLayer) {
+	if (!secondLayer || sound->getSynthMode() != SynthMode::KICK) {
+		return nullptr;
+	}
+	for (const KickPad& pad : kickPads) {
+		if (pad.x == x && pad.y == y) {
+			return pad.item;
+		}
+	}
+	return nullptr;
+}
+
+bool getKickShortcutPad(const MenuItem* item, int32_t* x, int32_t* y, bool* secondLayer) {
+	for (const KickPad& pad : kickPads) {
+		if (item == pad.item) {
+			*x = pad.x;
+			*y = pad.y;
+			*secondLayer = true;
+			return true;
+		}
+	}
+	return false;
+}
 
 deluge::vector<HorizontalMenu*> horizontalMenusChainForKit = {
 	&kitClipMasterMenu,
@@ -2134,7 +2235,7 @@ deluge::vector<HorizontalMenu*> horizontalMenusChainForSong = {
 deluge::vector<HorizontalMenu*> horizontalMenusChainForAudioClip = {
 	&audioClipMasterMenu, &audioClipSampleMenu,
 	&globalFiltersMenuGroup, &eqMenu, &globalModFXMenu,
-	&globalReverbMenuGroup, &globalDelayMenu, &audioClipDistortionMenu,
+	&globalReverbMenuGroup, &globalDelayMenu, &audioClipDistortionMenu, &audioClipBassMonoHorizontal,
 	&dott_menu, &globalSidechainMenu, &audioCompMenu, &stutterMenu
 };
 

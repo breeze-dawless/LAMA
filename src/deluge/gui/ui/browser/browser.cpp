@@ -878,8 +878,12 @@ Error Browser::getUnusedSlot(OutputType outputType, String* newName, char const*
 
 	Error error;
 	if (display->haveOLED()) {
-		char filenameToStartAt[6]; // thingName is max 4 chars.
-		strcpy(filenameToStartAt, thingName);
+		// thingName is usually max 4 chars (SONG, SYNT, KIT), but the pattern save UI passes "PATTERN", which
+		// overflowed the old 6-byte buffer (upstream #4782)
+		constexpr size_t kBufferSize = 20;
+		char filenameToStartAt[kBufferSize];
+		strncpy(filenameToStartAt, thingName, kBufferSize - 2); // Leave room for the colon and the terminator
+		filenameToStartAt[kBufferSize - 2] = 0;
 		strcat(filenameToStartAt, ":");
 		error = readFileItemsFromFolderAndMemory(currentSong, outputType, getThingName(outputType), filenameToStartAt,
 		                                         NULL, false, Availability::ANY, CATALOG_SEARCH_LEFT);

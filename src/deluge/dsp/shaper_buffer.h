@@ -66,6 +66,32 @@ constexpr q31_t kShaperSmoothingAlpha = static_cast<q31_t>(0.0005 * ONE_Q31);
 	return static_cast<int32_t>((uval >> n) | (uval << (32 - n)));
 }
 
+/// UI-facing scale for the Tone knob, matches kMaxMenuValue (0-50) used by other such controls.
+constexpr int32_t kShaperToneUiMax = 50;
+
+/// Runs a one-pole lowpass (tracked in *lowpassState) over the DRY input and returns it - the
+/// clean, undistorted low end that bypasses the Table Shaper entirely, letting the caller build a
+/// "clean lows, dirty highs" signal flow: split the pre-shaper signal into low (this function's
+/// return value) and high (input minus this), run the shaper on ONLY the high part, then sum
+/// low + shaped-high back together. That way the low end's original waveform is never sent through
+/// the waveshaping table at all, regardless of Drive/Mix/extras settings.
+/// toneAmount (0-50) is the crossover point: 0 excludes nothing (the whole signal reaches the
+/// shaper, same as if Tone didn't exist), rising towards 50 pushes the crossover up towards
+/// roughly 1.5kHz, keeping progressively more of the low end clean.
+[[gnu::always_inline]] inline q31_t shaperCleanLowEnd(q31_t input, int32_t* lowpassState, uint8_t toneAmount) {
+	if (toneAmount == 0) {
+		*lowpassState = 0;
+		return 0;
+	}
+	constexpr q31_t kMaxAlpha = static_cast<q31_t>(0.2136 * ONE_Q31); // ~1.5kHz one-pole crossover @ 44.1kHz
+	constexpr q31_t kToneStepQ31 = ONE_Q31 / kShaperToneUiMax;
+	q31_t toneFraction = static_cast<q31_t>(toneAmount) * kToneStepQ31;
+	q31_t alpha = lshiftAndSaturate<1>(multiply_32x32_rshift32(toneFraction, kMaxAlpha));
+	q31_t diff = subtract_saturate(input, *lowpassState);
+	*lowpassState = add_saturate(*lowpassState, lshiftAndSaturate<1>(multiply_32x32_rshift32(diff, alpha)));
+	return *lowpassState;
+}
+
 /// Subtractive gain staging analysis (from voice.cpp):
 /// - FM: sourceAmplitude at full level → signal at ~23M peak
 /// - Subtractive: oscillators scaled by >> 4 OR filterGain (both ~16x attenuation)

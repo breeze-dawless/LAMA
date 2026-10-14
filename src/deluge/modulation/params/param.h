@@ -104,6 +104,7 @@ enum Local : ParamType {
 	LOCAL_OSC_B_START_OFFSET, // Sample start offset for oscillator B (bipolar)
 	LOCAL_OSC_A_PHASE,        // Oscillator A retrigger phase offset (bipolar)
 	LOCAL_OSC_B_PHASE,        // Oscillator B retrigger phase offset (bipolar)
+	LOCAL_FOLD_SYMMETRY,      // Wavefold symmetry: DC bias before folding (bipolar, 0 = symmetric)
 
 	// Local zone params (pure modulation pass-through, scaling handled by ZoneBasedParam)
 	FIRST_LOCAL_ZONE,
@@ -213,6 +214,7 @@ enum UnpatchedShared : ParamType {
 	UNPATCHED_TREBLE,
 	UNPATCHED_BASS_FREQ,
 	UNPATCHED_TREBLE_FREQ,
+	UNPATCHED_MID,
 	UNPATCHED_SAMPLE_RATE_REDUCTION,
 	UNPATCHED_BITCRUSHING,
 	UNPATCHED_MOD_FX_OFFSET,
@@ -399,7 +401,7 @@ const uint32_t patchedParamShortcutsSecondLayer[kDisplayWidth][kDisplayHeight] =
     {kNoParamID				 , kNoParamID					 , kNoParamID                    , kNoParamID             , kNoParamID     , kNoParamID				   , kNoParamID            , kNoParamID},
     {kNoParamID				 , kNoParamID					 , kNoParamID                    , kNoParamID             , kNoParamID     , kNoParamID				   , kNoParamID            , kNoParamID},
     {kNoParamID   			 , kNoParamID            		 , kNoParamID                    , kNoParamID             , kNoParamID     , kNoParamID                , kNoParamID            , kNoParamID},
-    {kNoParamID              , kNoParamID                    , kNoParamID                    , kNoParamID             , kNoParamID     , kNoParamID                , kNoParamID            , kNoParamID},
+    {kNoParamID              , kNoParamID                    , kNoParamID                    , kNoParamID             , kNoParamID     , kNoParamID                , kNoParamID            , LOCAL_FOLD_SYMMETRY},
     {LOCAL_ENV_2_RELEASE     , LOCAL_ENV_2_SUSTAIN           , LOCAL_ENV_2_DECAY             , LOCAL_ENV_2_ATTACK     , kNoParamID	   , kNoParamID                , kNoParamID   			, kNoParamID},
     {LOCAL_ENV_3_RELEASE     , LOCAL_ENV_3_SUSTAIN           , LOCAL_ENV_3_DECAY             , LOCAL_ENV_3_ATTACK     , kNoParamID	   , kNoParamID                , kNoParamID   			, kNoParamID},
     {kNoParamID              , kNoParamID                    , kNoParamID					 , kNoParamID             , kNoParamID     , kNoParamID                , kNoParamID            , kNoParamID},

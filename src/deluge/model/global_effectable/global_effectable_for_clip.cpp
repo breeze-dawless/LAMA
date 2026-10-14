@@ -25,6 +25,7 @@
 #include "model/action/action_logger.h"
 #include "processing/engines/audio_engine.h"
 #include "processing/stem_export/stem_export.h"
+#include <array>
 #include <limits>
 #include <string.h>
 // #include <algorithm>
@@ -132,9 +133,17 @@ GlobalEffectableForClip::GlobalEffectableForClip() {
 	if (clippingAmount != 0u) {
 		int32_t shiftAmount = getShiftAmountForSaturation();
 		for (StereoSample& sample : global_effectable_audio) {
-			sample.l = saturate(sample.l, &lastSaturationTanHWorkingValue[0], shiftAmount);
-			sample.r = saturate(sample.r, &lastSaturationTanHWorkingValue[1], shiftAmount);
+			sample.l = saturate(sample.l, &lastSaturationTanHWorkingValue[0], shiftAmount, &lastSaturationToneState[0]);
+			sample.r = saturate(sample.r, &lastSaturationTanHWorkingValue[1], shiftAmount, &lastSaturationToneState[1]);
 		}
+	}
+
+	// Bass Mono: narrows stereo width below a crossover towards mono (see dsp/mono_maker.hpp).
+	// Computed once per buffer (involves a single exp2f), not per sample.
+	q31_t monoMakerAlpha = deluge::dsp::alphaForCrossoverFreq(subBassMonoFreq);
+	for (StereoSample& sample : global_effectable_audio) {
+		deluge::dsp::monoizeSubBass(sample.l, sample.r, monoMakerState[0], monoMakerState[1], subBassMonoAmount,
+		                            monoMakerAlpha, &sample.l, &sample.r);
 	}
 
 	if (renderedLastTime) {
@@ -163,11 +172,34 @@ GlobalEffectableForClip::GlobalEffectableForClip() {
 		UnpatchedParamSet* unpatchedParams = paramManagerForClip->getUnpatchedParamSet();
 		q31_t satDrive = unpatchedParams->getValue(params::UNPATCHED_TABLE_SHAPER_DRIVE);
 		q31_t satMix = unpatchedParams->getValue(params::UNPATCHED_TABLE_SHAPER_MIX);
+
+		// Tone: split off a clean low end before the shaper sees anything, so bass never gets
+		// waveshaped regardless of Drive/Mix/extras (see shaperCleanLowEnd(), dsp/shaper_buffer.h).
+		static std::array<StereoSample, SSI_TX_BUFFER_NUM_SAMPLES> toneLowBufferGlobal;
+		uint8_t tone = shaper.tone;
+		if (tone > 0) {
+			for (size_t i = 0; i < global_effectable_audio.size(); i++) {
+				q31_t lowL = deluge::dsp::shaperCleanLowEnd(global_effectable_audio[i].l, &shaper.toneLowStateL, tone);
+				q31_t lowR = deluge::dsp::shaperCleanLowEnd(global_effectable_audio[i].r, &shaper.toneLowStateR, tone);
+				toneLowBufferGlobal[i].l = lowL;
+				toneLowBufferGlobal[i].r = lowR;
+				global_effectable_audio[i].l = subtract_saturate(global_effectable_audio[i].l, lowL);
+				global_effectable_audio[i].r = subtract_saturate(global_effectable_audio[i].r, lowR);
+			}
+		}
+
 		deluge::dsp::shapeBufferInt32(
 		    global_effectable_audio, shaperDsp, satDrive, &shaper.driveLast, satMix, &shaper.threshold32Last,
 		    &shaper.blendSlopeLast_Q8, 0, false, &shaper.prevScaledInputL, &shaper.prevScaledInputR,
 		    &shaper.prevSampleL, &shaper.prevSampleR, &shaper.zcCountL, &shaper.zcCountR, &shaper.subSignL,
 		    &shaper.subSignR, shaper.extrasMask, shaper.gammaPhase, &shaper.slewedL, &shaper.slewedR);
+
+		if (tone > 0) {
+			for (size_t i = 0; i < global_effectable_audio.size(); i++) {
+				global_effectable_audio[i].l = add_saturate(global_effectable_audio[i].l, toneLowBufferGlobal[i].l);
+				global_effectable_audio[i].r = add_saturate(global_effectable_audio[i].r, toneLowBufferGlobal[i].r);
+			}
+		}
 	}
 
 	// Disperser (no mod matrix cables in unpatched context)

@@ -49,7 +49,7 @@ bool Synth::isCurrentOptionAvailable() {
 
 	// Multisamples (load entire folder and auto-detect ranges). Will delete all previous Ranges.
 	if (currentOption == 0) {
-		return (soundEditor.currentSound->getSynthMode() != SynthMode::RINGMOD);
+		return true;
 	}
 
 	// Apart from that option, none of the other ones are valid if currently sitting on a folder-name.
@@ -59,8 +59,8 @@ bool Synth::isCurrentOptionAvailable() {
 
 	switch (currentOption) {
 	case 1:
-		// "Basic" Sample - unavailable if ringmod.
-		return (soundEditor.currentSound->getSynthMode() != SynthMode::RINGMOD);
+		// "Basic" Sample
+		return true;
 
 	case 3:
 		// WaveTable
