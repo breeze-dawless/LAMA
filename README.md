@@ -26,6 +26,10 @@ Highly experimental and for most users, not a replacement for the main community
 
 ### Features (vs Main)
 
+**Custom build:** how to use the features of the `owlet-custom` branch (Kick synth mode, Vowel filter, custom LFO
+shapes, saturation / wavefold editors, Bass Mono, EQ Mid...) is explained step by step in the
+[feature manual](docs/owlet-custom-features.md).
+
 #### Workflow
 
 | Feature | Description |
