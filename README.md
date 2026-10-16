@@ -1,11 +1,13 @@
-# Deluge Owlet Firmware (1.3 Port)
+# Lama - custom Deluge firmware based on Owlet 1.3
 
-> **Unofficial custom build.** This branch (`owlet-custom`) is the Owlet firmware 1.3 plus: the **Vowel filter**,
+> **Lama** is an unofficial custom build: the Owlet firmware 1.3 plus the **Vowel filter**,
 > **custom LFO shapes** with a shape editor (40 presets) and **8-bar LFO sync**, a **Saturation editor**, a
 > **Wavefold editor**, **Bass Mono**, an **EQ Mid band** and **Table Shaper Tone**. The DX7 engine, Ringmod, the Kick
-> synth mode and four PHI oscillators were removed. How to use it: [feature manual](docs/owlet-custom-features.md).
-> It is not supported by the Owlet or community firmware teams - please report problems with this build here.
-> Everything below is the Owlet firmware README.
+> synth mode and four PHI oscillators were removed. How to use it: [Lama manual](docs/lama-manual.md).
+> It is not supported by the Owlet or community firmware teams - please report problems with Lama here. Everything
+> below is the Owlet firmware README.
+
+# Deluge Owlet Firmware (1.3 Port)
 
 This is **owlet-firmware**, a personal fork of the Deluge Community Firmware maintained at [owlet-labs/DelugeFirmware](https://github.com/owlet-labs/DelugeFirmware). It serves as a playground for experimental sound design features that may be too specialized or CPU-intensive for the main community branch.
 
@@ -33,9 +35,9 @@ Highly experimental and for most users, not a replacement for the main community
 
 ### Features (vs Main)
 
-**Custom build:** how to use the features of the `owlet-custom` branch (Vowel filter, custom LFO shapes, saturation /
+**Lama:** how to use the features of this build (Vowel filter, custom LFO shapes, saturation /
 wavefold editors, Bass Mono, EQ Mid...) is explained step by step in the
-[feature manual](docs/owlet-custom-features.md).
+[Lama manual](docs/lama-manual.md).
 
 #### Workflow
 

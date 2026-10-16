@@ -1,7 +1,7 @@
-# Owlet Custom Build - Feature Manual
+# Lama - Feature Manual
 
-Functions of the custom build of the Owlet firmware (branch `owlet-custom`) that go beyond the Owlet firmware, the
-removed features, and how older songs and presets load.
+Lama is a custom build of the Owlet firmware 1.3. This manual covers the functions that go beyond the Owlet firmware,
+the removed features, and how older songs and presets load. Settings → Firmware version shows `Lama ...`.
 
 **Pad positions** are given as *column* (1-16, counted from the left) and *row* (1-8, counted from the bottom). The two
 sidebar columns to the right of the grid are the *left* (mute) and *right* (audition) sidebar column. **"Press twice"**
