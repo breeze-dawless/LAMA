@@ -1,5 +1,12 @@
 # Deluge Owlet Firmware (1.3 Port)
 
+> **Unofficial custom build.** This branch (`owlet-custom`) is the Owlet firmware 1.3 plus: the **Vowel filter**,
+> **custom LFO shapes** with a shape editor (40 presets) and **8-bar LFO sync**, a **Saturation editor**, a
+> **Wavefold editor**, **Bass Mono**, an **EQ Mid band** and **Table Shaper Tone**. The DX7 engine, Ringmod, the Kick
+> synth mode and four PHI oscillators were removed. How to use it: [feature manual](docs/owlet-custom-features.md).
+> It is not supported by the Owlet or community firmware teams - please report problems with this build here.
+> Everything below is the Owlet firmware README.
+
 This is **owlet-firmware**, a personal fork of the Deluge Community Firmware maintained at [owlet-labs/DelugeFirmware](https://github.com/owlet-labs/DelugeFirmware). It serves as a playground for experimental sound design features that may be too specialized or CPU-intensive for the main community branch.
 
 This branch is based on **main** for stability.
