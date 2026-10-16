@@ -17,7 +17,6 @@
 
 #include "processing/sound/sound.h"
 #include "definitions_cxx.hpp"
-#include "dsp/kick_mode.hpp"
 #include "gui/l10n/l10n.h"
 #include "gui/ui/root_ui.h"
 #include "gui/ui/sound_editor.h"
@@ -139,12 +138,6 @@ void Sound::cloneFrom(ModControllableAudio* other) {
 	synthMode = src->synthMode;
 	oscillatorSync = src->oscillatorSync;
 	modulator1ToModulator0 = src->modulator1ToModulator0;
-	for (int32_t k = 0; k < 2; k++) {
-		kickPitchTime[k] = src->kickPitchTime[k];
-		kickPitchCurve[k] = src->kickPitchCurve[k];
-	}
-	clickSamplePath.set(&src->clickSamplePath);
-	clickSample.copyFrom(src->clickSample); // Out of memory leaves it to loadAllAudioFiles()
 
 	polyphonic = src->polyphonic;
 	maxVoiceCount = src->maxVoiceCount;
@@ -543,25 +536,6 @@ Error Sound::readTagFromFileOrError(Deserializer& reader, char const* tagName, P
 		// Uart::print("synth mode set to: ");
 		// Uart::println(synthMode);
 		reader.exitTag("mode");
-	}
-
-	else if (!strcmp(tagName, "clickSample")) {
-		clickSamplePath.set(reader.readTagOrAttributeValue());
-		reader.exitTag("clickSample");
-	}
-
-	// Kick mode pitch envelopes (clamped to their menu ranges)
-	else if (!strcmp(tagName, "kickPitchTime1") || !strcmp(tagName, "kickPitchTime2")) {
-		const int32_t k = (tagName[13] == '2') ? 1 : 0;
-		kickPitchTime[k] =
-		    std::clamp<int32_t>(reader.readTagOrAttributeValueInt(), 0, deluge::dsp::kick_mode::kTimeSteps);
-		reader.exitTag(k == 0 ? "kickPitchTime1" : "kickPitchTime2");
-	}
-	else if (!strcmp(tagName, "kickPitchCurve1") || !strcmp(tagName, "kickPitchCurve2")) {
-		const int32_t k = (tagName[14] == '2') ? 1 : 0;
-		kickPitchCurve[k] = std::clamp<int32_t>(reader.readTagOrAttributeValueInt(), -deluge::dsp::kick_mode::kCurveMax,
-		                                        deluge::dsp::kick_mode::kCurveMax);
-		reader.exitTag(k == 0 ? "kickPitchCurve1" : "kickPitchCurve2");
 	}
 
 	// Backwards-compatible reading of old-style oscs, from pre-mid-2016 files
@@ -2327,7 +2301,7 @@ bool Sound::renderingOscillatorSyncCurrently(ParamManagerForTimeline* paramManag
 	if (!oscillatorSync) {
 		return false;
 	}
-	if (synthMode == SynthMode::FM || synthMode == SynthMode::KICK) {
+	if (synthMode == SynthMode::FM) {
 		return false;
 	}
 	return getSmoothedPatchedParamValue(params::LOCAL_OSC_B_VOLUME, *paramManager) != -2147483648;
@@ -2337,7 +2311,7 @@ bool Sound::renderingOscillatorSyncEver(ParamManager* paramManager) {
 	if (!oscillatorSync) {
 		return false;
 	}
-	if (synthMode == SynthMode::FM || synthMode == SynthMode::KICK) {
+	if (synthMode == SynthMode::FM) {
 		return false;
 	}
 	return paramManager->getPatchedParamSet()->params[params::LOCAL_OSC_B_VOLUME].containsSomething(-2147483648);
@@ -3904,10 +3878,6 @@ Error Sound::readFromFile(Deserializer& reader, ModelStackWithModControllable* m
 	modulatorTranspose[1] = 0;
 	oscRetriggerPhase.fill(0);
 	modulatorRetriggerPhase.fill(0);
-	legacyKickSources = 0;
-	legacyKickClickTime = 45;
-	legacyKickClickCurve = 30;
-	legacyKickBodyCurve = 10;
 
 	char const* tagName;
 
@@ -3924,11 +3894,6 @@ Error Sound::readFromFile(Deserializer& reader, ModelStackWithModControllable* m
 			reader.exitTag(tagName);
 		}
 	}
-
-	if (paramManager.containsAnyMainParamCollections()) {
-		convertLegacyKickOscillators(&paramManager);
-	}
-	legacyKickSources = 0;
 
 	// old FM patches can have a filter mode saved in them even though it wouldn't have rendered at the time
 	if (synthMode == SynthMode::FM && song_firmware_version < FirmwareVersion::community({1, 2, 0})) {
@@ -3957,75 +3922,6 @@ Error Sound::readFromFile(Deserializer& reader, ModelStackWithModControllable* m
 	}
 
 	return Error::NONE;
-}
-
-/// Sounds saved with the old Kick oscillator type load in the Kick synth mode: that oscillator becomes a sine two
-/// octaves down (where the Kick oscillator sat), its click and body pitch sweeps become pitch envelopes 3 and 4, and
-/// the patched params it had borrowed go back to their defaults - otherwise they'd now act as FM or pulse width.
-void Sound::convertLegacyKickOscillators(ParamManager* paramManager) {
-	const uint8_t kickSources = legacyKickSources;
-	legacyKickSources = 0;
-	if (kickSources == 0 || synthMode != SynthMode::SUBTRACTIVE) {
-		return; // FM never played the Kick oscillator
-	}
-	namespace km = deluge::dsp::kick_mode;
-	PatchedParamSet& patched = *paramManager->getPatchedParamSet();
-	auto preset = [&](int32_t p) { return patched.params[p].getCurrentValue(); };
-
-	// The old Kick's mappings: click amount 0..60 semitones (a hybrid param), body amount 0..48 semitones, click time
-	// 0.5..50 ms, body time 5..1000 ms
-	const int32_t s = (kickSources & 1) ? 0 : 1;
-	const int64_t clickSteps =
-	    (static_cast<int64_t>(preset(params::LOCAL_OSC_A_PHASE_WIDTH + s)) * 60 + (int64_t{1} << 30)) >> 31;
-	const int32_t clickSemitones = std::clamp<int32_t>(static_cast<int32_t>(clickSteps), 0, 60);
-	const int32_t bodySemitones = km::stepsFromBipolarPreset(preset(params::LOCAL_MODULATOR_0_PITCH_ADJUST + s), 48);
-	const float clickMs = 0.5f * std::pow(100.0f, static_cast<float>(legacyKickClickTime) / 100.0f);
-	const float bodyMs =
-	    5.0f
-	    * std::pow(200.0f,
-	               static_cast<float>(km::stepsFromBipolarPreset(preset(params::LOCAL_MODULATOR_0_FEEDBACK + s), 100))
-	                   / 100.0f);
-	auto timeSteps = [](float ms) { // The inverse of km::pitchTimeMs()
-		return static_cast<uint8_t>(std::clamp<int32_t>(
-		    static_cast<int32_t>(std::lround(km::kTimeSteps * std::log(ms / 0.5f) / std::log(4000.0f))), 0,
-		    km::kTimeSteps));
-	};
-
-	synthMode = SynthMode::KICK;
-	patched.params[params::LOCAL_ENV_2_SUSTAIN].setCurrentValueBasicForSetup(
-	    km::bipolarPresetFromSteps(clickSemitones, km::kAmountMax));
-	patched.params[params::LOCAL_ENV_3_SUSTAIN].setCurrentValueBasicForSetup(
-	    km::bipolarPresetFromSteps(bodySemitones, km::kAmountMax));
-	kickPitchTime[0] = timeSteps(clickMs);
-	kickPitchCurve[0] = legacyKickClickCurve;
-	kickPitchTime[1] = timeSteps(bodyMs);
-	kickPitchCurve[1] = legacyKickBodyCurve;
-
-	// The old Kick shaped its own volume and ignored the note length: envelope 1 does that now
-	patched.params[params::LOCAL_ENV_0_ATTACK].setCurrentValueBasicForSetup(
-	    getParamFromUserValue(params::LOCAL_ENV_0_ATTACK, 0));
-	patched.params[params::LOCAL_ENV_0_DECAY].setCurrentValueBasicForSetup(
-	    getParamFromUserValue(params::LOCAL_ENV_0_DECAY, 28));
-	patched.params[params::LOCAL_ENV_0_SUSTAIN].setCurrentValueBasicForSetup(
-	    getParamFromUserValue(params::LOCAL_ENV_0_SUSTAIN, 0));
-	patched.params[params::LOCAL_ENV_0_RELEASE].setCurrentValueBasicForSetup(
-	    getParamFromUserValue(params::LOCAL_ENV_0_RELEASE, 28));
-
-	for (int32_t k = 0; k < kNumSources; k++) {
-		if ((kickSources & (1 << k)) == 0) {
-			continue;
-		}
-		sources[k].transpose = static_cast<int16_t>(std::max(sources[k].transpose - 24, -96));
-		patched.params[params::LOCAL_OSC_A_PHASE_WIDTH + k].setCurrentValueBasicForSetup(0);
-		patched.params[params::LOCAL_OSC_A_WAVE_INDEX + k].setCurrentValueBasicForSetup(0);
-		patched.params[params::LOCAL_CARRIER_0_FEEDBACK + k].setCurrentValueBasicForSetup(
-		    std::numeric_limits<int32_t>::min());
-		patched.params[params::LOCAL_MODULATOR_0_FEEDBACK + k].setCurrentValueBasicForSetup(
-		    std::numeric_limits<int32_t>::min());
-		patched.params[params::LOCAL_MODULATOR_0_VOLUME + k].setCurrentValueBasicForSetup(
-		    std::numeric_limits<int32_t>::min());
-		patched.params[params::LOCAL_MODULATOR_0_PITCH_ADJUST + k].setCurrentValueBasicForSetup(0);
-	}
 }
 
 Error Sound::createParamManagerForLoading(ParamManagerForTimeline* paramManager) {
@@ -4084,28 +3980,6 @@ void Sound::compensateVolumeForResonance(ModelStackWithThreeMainThings* modelSta
 	}
 }
 
-/// The settings of the old Kick oscillator type that carry over to the Kick synth mode (see
-/// Sound::convertLegacyKickOscillators()). Returns false if tagName isn't one of them.
-static bool readLegacyKickSettingFromFile(Deserializer& reader, char const* tagName, Sound& sound) {
-	// exitTag() gets the literal, not tagName - the reader may reuse tagName's buffer while reading the value
-	if (!strcmp(tagName, "kickClickTime")) {
-		sound.legacyKickClickTime = std::clamp<int32_t>(reader.readTagOrAttributeValueInt(), 0, 100);
-		reader.exitTag("kickClickTime");
-	}
-	else if (!strcmp(tagName, "kickClickCurve")) {
-		sound.legacyKickClickCurve = std::clamp<int32_t>(reader.readTagOrAttributeValueInt(), -50, 50);
-		reader.exitTag("kickClickCurve");
-	}
-	else if (!strcmp(tagName, "kickBodyCurve")) {
-		sound.legacyKickBodyCurve = std::clamp<int32_t>(reader.readTagOrAttributeValueInt(), -50, 50);
-		reader.exitTag("kickBodyCurve");
-	}
-	else {
-		return false;
-	}
-	return true;
-}
-
 // paramManager only required for old old song files
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstack-usage="
@@ -4121,11 +3995,7 @@ Error Sound::readSourceFromFile(Deserializer& reader, int32_t s, ParamManagerFor
 	char const* tagName;
 	while (*(tagName = reader.readNextTagOrAttributeName())) {
 		if (!strcmp(tagName, "type")) {
-			char const* typeName = reader.readTagOrAttributeValue();
-			if (!strcmp(typeName, "kick")) {
-				legacyKickSources |= 1 << s; // The old Kick oscillator - see convertLegacyKickOscillators()
-			}
-			source->setOscType(stringToOscType(typeName));
+			source->setOscType(stringToOscType(reader.readTagOrAttributeValue()));
 			reader.exitTag("type");
 		}
 		else if (!strcmp(tagName, "phaseWidth")) {
@@ -4161,9 +4031,6 @@ Error Sound::readSourceFromFile(Deserializer& reader, int32_t s, ParamManagerFor
 		else if (!strcmp(tagName, "reversed")) {
 			source->sampleControls.reversed = reader.readTagOrAttributeValueInt();
 			reader.exitTag("reversed");
-		}
-		else if (readLegacyKickSettingFromFile(reader, tagName, *this)) {
-			// Old Kick oscillator setting - see convertLegacyKickOscillators()
 		}
 		else if (!strcmp(tagName, "phiMorphZoneA")) {
 			source->phiMorphZoneA = reader.readTagOrAttributeValueInt();
@@ -5169,15 +5036,6 @@ void Sound::writeToFile(Serializer& writer, bool savingSong, ParamManager* param
 	}
 
 	writer.writeAttribute("mode", (char*)synthModeToString(synthMode));
-	if (synthMode == SynthMode::KICK) {
-		writer.writeAttribute("kickPitchTime1", kickPitchTime[0]);
-		writer.writeAttribute("kickPitchTime2", kickPitchTime[1]);
-		writer.writeAttribute("kickPitchCurve1", kickPitchCurve[0]);
-		writer.writeAttribute("kickPitchCurve2", kickPitchCurve[1]);
-	}
-	if (!clickSamplePath.isEmpty()) {
-		writer.writeAttribute("clickSample", clickSamplePath.get());
-	}
 
 	if (transpose != 0) {
 		writer.writeAttribute("transpose", transpose);
@@ -5349,25 +5207,7 @@ int16_t Sound::getMinOscTranspose() {
 }
 
 // Returns true if more loading needed later
-Error Sound::setClickSample(char const* path) {
-	Error error = clickSample.load(path);
-	if (error != Error::NONE) {
-		return error;
-	}
-	return clickSamplePath.set(path);
-}
-
-void Sound::clearClickSample() {
-	clickSample.clear();
-	clickSamplePath.clear();
-}
-
 Error Sound::loadAllAudioFiles(bool mayActuallyReadFiles) {
-
-	// Kick mode click sample. A missing or broken file just leaves plain noise - it shouldn't stop the rest loading.
-	if (mayActuallyReadFiles && !clickSamplePath.isEmpty() && !clickSample.loaded()) {
-		clickSample.load(clickSamplePath.get());
-	}
 
 	for (int32_t s = 0; s < kNumSources; s++) {
 		if (sources[s].oscType == OscType::SAMPLE || sources[s].oscType == OscType::WAVETABLE) {

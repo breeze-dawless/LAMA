@@ -75,14 +75,6 @@ bool VoiceUnisonPartSource::noteOn(Voice* voice, Source* source, VoiceSamplePlay
 	        || source->oscType == OscType::INPUT_R || source->oscType == OscType::INPUT_STEREO)) {
 		// oscPos = 0;
 	}
-	else if (synthMode == SynthMode::KICK) {
-		// Kick mode: every hit starts its oscillators at the same point (retrigger phase "off" means 0 here). A legato
-		// note-on just keeps them running.
-		if (resetEverything) {
-			oscPos = getOscInitialPhaseForZero(source->oscType)
-			         + ((oscRetriggerPhase != 0xFFFFFFFF) ? oscRetriggerPhase : 0);
-		}
-	}
 	else {
 		if (oscRetriggerPhase != 0xFFFFFFFF) {
 			oscPos = getOscInitialPhaseForZero(source->oscType) + oscRetriggerPhase;

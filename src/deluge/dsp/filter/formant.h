@@ -36,13 +36,18 @@ public:
 		left_ = {};
 		right_ = {};
 		primed_ = false;
+		rawWasOn_ = false;
 	}
+	/// Raw 0..50 (see formant::kRawMax), set before setConfig() - it ramps in with the coefficients
+	void setRaw(int32_t raw) { rawGain_ = formant::rawGainFor(raw); }
 
 	/// Where on the vowel path a final LPF frequency param value sits: 0 = A ... 1 = U. The preset knob spans +-5.6
 	/// octaves around the param's neutral value (getParamRange()), so knob 0..50 maps onto the whole path.
 	static float positionForFrequency(q31_t frequency);
 
 private:
+	template <bool kStereo, bool kRaw>
+	void process(q31_t* startSample, q31_t* endSample, int32_t stride);
 	template <bool kStereo>
 	void process(q31_t* startSample, q31_t* endSample, int32_t stride);
 
@@ -50,7 +55,9 @@ private:
 	formant::Coefficients to_;   ///< ...to these
 	formant::Channel left_;
 	formant::Channel right_;
-	bool primed_; ///< from_ is valid (false after a reset: the first buffer starts at its own target)
+	float rawGain_; ///< See setRaw()
+	bool primed_;   ///< from_ is valid (false after a reset: the first buffer starts at its own target)
+	bool rawWasOn_; ///< The raw band ran last buffer (its memory is current)
 };
 
 } // namespace deluge::dsp::filter

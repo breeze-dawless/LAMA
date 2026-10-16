@@ -189,7 +189,6 @@ enum class UIType : uint8_t {
 	AUDIO_CLIP,
 	AUDIO_RECORDER,
 	AUTOMATION,
-	CLICK_SAMPLE_BROWSER,
 	CONTEXT_MENU,
 	INSTRUMENT_CLIP,
 	KEYBOARD_SCREEN,
@@ -436,9 +435,8 @@ constexpr int32_t kNumCompressorModes = util::to_underlying(CompressorMode::MULT
 enum class SynthMode : uint8_t {
 	SUBTRACTIVE,
 	FM,
-	KICK, // Subtractive oscillators + FM modulators shaping them + envelopes 3/4 as pitch envelopes (dsp/kick_mode.hpp)
 };
-constexpr int kNumSynthModes = util::to_underlying(::SynthMode::KICK) + 1;
+constexpr int kNumSynthModes = util::to_underlying(::SynthMode::FM) + 1;
 
 constexpr int32_t SAMPLE_MAX_TRANSPOSE = 24;
 constexpr int32_t SAMPLE_MIN_TRANSPOSE = (-96);

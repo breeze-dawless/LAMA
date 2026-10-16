@@ -802,6 +802,7 @@ void GlobalEffectable::setupFilterSetConfig(int32_t* postFXVolume, ParamManager*
 	             || unpatchedParams->getValue(params::UNPATCHED_HPF_MORPH) > NEGATIVE_ONE_Q31;
 	FilterMode lpfModeForRender = doLPF ? lpfMode : FilterMode::OFF;
 	FilterMode hpfModeForRender = doHPF ? hpfMode : FilterMode::OFF;
+	filterSet.setVowelRaw(vowelRaw);
 	*postFXVolume =
 	    filterSet.setConfig(lpfFrequency, lpfResonance, lpfModeForRender, lpfMorph, hpfFrequency, hpfResonance,
 	                        hpfModeForRender, hpfMorph, *postFXVolume, filterRoute, false, NULL);

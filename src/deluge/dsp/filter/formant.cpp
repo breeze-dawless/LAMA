@@ -23,8 +23,9 @@ namespace {
 constexpr float kQ31ToFloat = 1.0f / 2147483648.0f;
 constexpr float kFloatToQ31 = 2147483520.0f; // Largest float below 2^31: full scale without overflowing
 
+/// Resonance peaks above full scale bend smoothly instead of clipping (see formant::softLimit())
 [[gnu::always_inline]] inline q31_t toQ31(float value) {
-	return static_cast<q31_t>(std::clamp(value, -1.0f, 1.0f) * kFloatToQ31);
+	return static_cast<q31_t>(std::clamp(formant::softLimit(value), -1.0f, 1.0f) * kFloatToQ31);
 }
 } // namespace
 
@@ -42,11 +43,12 @@ q31_t FormantFilter::setConfig(q31_t frequency, q31_t resonance, FilterMode lpfM
 	const float position = positionForFrequency(frequency);
 	// Raw resonance runs 0..2^29 (see SVFilter::setConfig)
 	const float sharpness = static_cast<float>(resonance) * (1.0f / 536870912.0f);
-	// Morph arrives as q31 0..1 (configure() shifted it): up to an octave higher; negative modulation goes lower
+	// Morph arrives as q31 (configure() shifted it), 1 = an octave: the knob goes up to an octave higher, and on voices
+	// modulation adds on both ways (see Voice::render()), so it can go lower too
 	const float shiftOctaves = static_cast<float>(lpfMorph) * kQ31ToFloat;
 
 	const formant::Shape shape = formant::shapeAt(position, shiftOctaves, sharpness);
-	const formant::Coefficients target = formant::coefficientsFor(shape, shape.level);
+	const formant::Coefficients target = formant::coefficientsFor(shape, shape.level, rawGain_);
 	from_ = primed_ ? to_ : target;
 	to_ = target;
 	primed_ = true;
@@ -54,6 +56,23 @@ q31_t FormantFilter::setConfig(q31_t frequency, q31_t resonance, FilterMode lpfM
 }
 
 template <bool kStereo>
+void FormantFilter::process(q31_t* startSample, q31_t* endSample, int32_t stride) {
+	// The raw band only runs while Raw is up (or ramping to / from 0) - otherwise it costs nothing
+	const bool raw = (from_.pb0 != 0.0f) || (to_.pb0 != 0.0f);
+	if (raw && !rawWasOn_) {
+		left_.clearRaw();
+		right_.clearRaw();
+	}
+	rawWasOn_ = raw;
+	if (raw) {
+		process<kStereo, true>(startSample, endSample, stride);
+	}
+	else {
+		process<kStereo, false>(startSample, endSample, stride);
+	}
+}
+
+template <bool kStereo, bool kRaw>
 [[gnu::hot]] void FormantFilter::process(q31_t* startSample, q31_t* endSample, int32_t stride) {
 	const int32_t numFrames = static_cast<int32_t>((endSample - startSample + stride - 1) / stride);
 	if (numFrames <= 0) {
@@ -69,9 +88,9 @@ template <bool kStereo>
 	q31_t* sample = startSample;
 	for (int32_t n = 0; n < numFrames; n++) {
 		formant::advance(co, step);
-		sample[0] = toQ31(left.process(static_cast<float>(sample[0]) * kQ31ToFloat, co));
+		sample[0] = toQ31(left.process<kRaw>(static_cast<float>(sample[0]) * kQ31ToFloat, co));
 		if constexpr (kStereo) {
-			sample[1] = toQ31(right.process(static_cast<float>(sample[1]) * kQ31ToFloat, co));
+			sample[1] = toQ31(right.process<kRaw>(static_cast<float>(sample[1]) * kQ31ToFloat, co));
 		}
 		sample += stride;
 	}

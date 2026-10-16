@@ -130,14 +130,16 @@ private:
 		return info.getSlot() == FilterSlot::LPF && info.getMode() == ::FilterMode::VOWEL;
 	}
 
-	/// Vowel mode: draws the filter's actual frequency response (100 Hz - 5 kHz, log scale), so the formants can be
+	/// Vowel mode: draws the filter's actual frequency response (100 Hz - 8 kHz, log scale), so the formants can be
 	/// seen moving with the knobs
 	void renderVowel(const SlotPosition& slots, int32_t freq_raw, int32_t reso_raw, int32_t morph_raw) const {
 		namespace formant = dsp::filter::formant;
 		oled_canvas::Canvas& image = OLED::main;
 
 		const formant::Shape shape = formant::shapeAt(freq_raw / 50.f, morph_raw / 50.f, reso_raw / 50.f);
-		const formant::Coefficients co = formant::coefficientsFor(shape, shape.level);
+		const int32_t raw =
+		    (soundEditor.currentModControllable != nullptr) ? soundEditor.currentModControllable->vowelRaw : 0;
+		const formant::Coefficients co = formant::coefficientsFor(shape, shape.level, formant::rawGainFor(raw));
 
 		constexpr uint8_t padding_x = 5;
 		constexpr uint8_t container_height = 23;
@@ -160,7 +162,7 @@ private:
 			for (int32_t k = 0; k < formant::kNumFormants; k++) {
 				response *= co.a[k] / (1.0f - co.b[k] * z1 - co.c[k] * z1 * z1);
 			}
-			// The presence band runs in parallel to the cascade
+			// Raw runs in parallel to the cascade (pb0 is 0 while it's off)
 			response += co.pb0 * (1.0f - z1 * z1) / (1.0f + co.pa1 * z1 + co.pa2 * z1 * z1);
 			const float db = 20.0f * std::log10(std::max(std::abs(response), 1.0e-6f));
 			const float height = std::clamp((db - kBottomDb) / (kTopDb - kBottomDb), 0.0f, 1.0f);

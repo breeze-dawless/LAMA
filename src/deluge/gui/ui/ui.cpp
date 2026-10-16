@@ -475,7 +475,6 @@ EnumStringMap<UIType, util::to_underlying(UIType::UI_TYPE_COUNT)> uiTypeMap = {
       {UIType::AUDIO_CLIP, "audio_clip"},
       {UIType::AUDIO_RECORDER, "audio_recorder"},
       {UIType::AUTOMATION, "automation"},
-      {UIType::CLICK_SAMPLE_BROWSER, "click_sample_browser"},
       {UIType::CONTEXT_MENU, "context_menu"},
       {UIType::INSTRUMENT_CLIP, "instrument_clip"},
       {UIType::KEYBOARD_SCREEN, "keyboard_screen"},

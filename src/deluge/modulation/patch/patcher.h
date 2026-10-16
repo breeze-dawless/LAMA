@@ -54,6 +54,13 @@ public:
 	void recalculateFinalValueForParamWithNoCables(int32_t param, Sound& sound, ParamManagerForTimeline& param_manager);
 	int32_t getUnisonOffset(int32_t param, int32_t unisonValue, Sound& sound, ParamManager& paramManager);
 
+	/// The final value a linear param gets from its own (preset) value alone, as if no cables were patched to it
+	int32_t finalLinearValueWithoutCables(uint32_t param, Sound& sound, ParamManager& param_manager);
+	/// The cables patched to a param, added up the way exp and hybrid params combine them: bipolar, around 0, without
+	/// the param's own value. For a linear param that's to be modulated additively in some context (see
+	/// Voice::render())
+	int32_t sumCablesAdditively(uint32_t param, ParamManager& param_manager);
+
 private:
 	int32_t combineCablesLinearForRangeParam(Destination const* destination, ParamManager& param_manager);
 	int32_t combineCablesLinear(Destination const* destination, uint32_t param, Sound& sound,

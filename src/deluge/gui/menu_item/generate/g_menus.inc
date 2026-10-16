@@ -3,13 +3,15 @@ filter::FilterModeSelection lpfModeMenu{STRING_FOR_MODE, STRING_FOR_LPF_MODE, fi
 filter::FilterParam lpfFreqMenu{STRING_FOR_FREQUENCY, STRING_FOR_LPF_FREQUENCY, params::LOCAL_LPF_FREQ, filter::FilterSlot::LPF, filter::FilterParamType::FREQUENCY};
 filter::FilterParam lpfResMenu{STRING_FOR_RESONANCE, STRING_FOR_LPF_RESONANCE, params::LOCAL_LPF_RESONANCE, filter::FilterSlot::LPF, filter::FilterParamType::RESONANCE};
 filter::FilterParam lpfMorphMenu{STRING_FOR_LPF_MORPH, params::LOCAL_LPF_MORPH, filter::FilterSlot::LPF, filter::FilterParamType::MORPH};
-std::array<MenuItem*, 4> child0 = {
+filter::VowelRaw lpfVowelRawMenu{STRING_FOR_VOWEL_RAW};
+std::array<MenuItem*, 5> child0 = {
     &lpfModeMenu,
     &lpfFreqMenu,
     &lpfResMenu,
     &lpfMorphMenu,
+    &lpfVowelRawMenu,
 };
-HorizontalMenu lpfMenu{STRING_FOR_LPF, child0};
+filter::LpfMenu lpfMenu{STRING_FOR_LPF, child0};
 filter::FilterModeSelection hpfModeMenu{STRING_FOR_MODE, STRING_FOR_HPF_MODE, filter::FilterSlot::HPF};
 filter::FilterParam hpfFreqMenu{STRING_FOR_FREQUENCY, STRING_FOR_HPF_FREQUENCY, params::LOCAL_HPF_FREQ, filter::FilterSlot::HPF, filter::FilterParamType::FREQUENCY};
 filter::FilterParam hpfResMenu{STRING_FOR_RESONANCE, STRING_FOR_HPF_RESONANCE, params::LOCAL_HPF_RESONANCE, filter::FilterSlot::HPF, filter::FilterParamType::RESONANCE};
@@ -172,15 +174,13 @@ osc::source::Volume source1VolumeMenu{STRING_FOR_OSC_LEVEL_MENU_TITLE, params::L
 source::patched_param::ModulatorLevel modulator0Volume{STRING_FOR_FM_MOD_LEVEL_MENU_TITLE, params::LOCAL_MODULATOR_0_VOLUME, 0};
 source::patched_param::ModulatorLevel modulator1Volume{STRING_FOR_FM_MOD_LEVEL_MENU_TITLE, params::LOCAL_MODULATOR_0_VOLUME, 1};
 patched_param::IntegerNonFM noiseMenu{STRING_FOR_NOISE_LEVEL, params::LOCAL_NOISE_VOLUME};
-osc::ClickSampleBrowse clickSampleMenu{STRING_FOR_CLICK_SAMPLE};
 osc::Sync oscSyncMenu{STRING_FOR_OSCILLATOR_SYNC};
-std::array<MenuItem*, 7> child10 = {
+std::array<MenuItem*, 6> child10 = {
     &source0VolumeMenu,
     &source1VolumeMenu,
     &modulator0Volume,
     &modulator1Volume,
     &noiseMenu,
-    &clickSampleMenu,
     &oscSyncMenu,
 };
 HorizontalMenu oscMixerMenu{STRING_FOR_OSCILLATOR_MIXER, child10};
@@ -210,34 +210,22 @@ envelope::Segment env3AttackMenu{STRING_FOR_ATTACK, STRING_FOR_ENV_ATTACK_MENU_T
 envelope::Segment env3DecayMenu{STRING_FOR_DECAY, STRING_FOR_ENV_DECAY_MENU_TITLE, params::LOCAL_ENV_0_DECAY, 2};
 envelope::Segment env3SustainMenu{STRING_FOR_SUSTAIN, STRING_FOR_ENV_SUSTAIN_MENU_TITLE, params::LOCAL_ENV_0_SUSTAIN, 2};
 envelope::Segment env3ReleaseMenu{STRING_FOR_RELEASE, STRING_FOR_ENV_RELEASE_MENU_TITLE, params::LOCAL_ENV_0_RELEASE, 2};
-envelope::kick_pitch::Amount env3KickPitchAmountMenu{STRING_FOR_PITCH, STRING_FOR_ENV_PITCH_MENU_TITLE, 2};
-envelope::kick_pitch::Time env3KickPitchTimeMenu{STRING_FOR_TIME, STRING_FOR_ENV_TIME_MENU_TITLE, 2};
-envelope::kick_pitch::Curve env3KickPitchCurveMenu{STRING_FOR_CURVE, STRING_FOR_ENV_CURVE_MENU_TITLE, 2};
-std::array<MenuItem*, 7> child13 = {
+std::array<MenuItem*, 4> child13 = {
     &env3AttackMenu,
     &env3DecayMenu,
     &env3SustainMenu,
     &env3ReleaseMenu,
-    &env3KickPitchAmountMenu,
-    &env3KickPitchTimeMenu,
-    &env3KickPitchCurveMenu,
 };
 envelope::EnvelopeMenu env3Menu{STRING_FOR_ENVELOPE_MENU_TITLE, child13, 2};
 envelope::Segment env4AttackMenu{STRING_FOR_ATTACK, STRING_FOR_ENV_ATTACK_MENU_TITLE, params::LOCAL_ENV_0_ATTACK, 3};
 envelope::Segment env4DecayMenu{STRING_FOR_DECAY, STRING_FOR_ENV_DECAY_MENU_TITLE, params::LOCAL_ENV_0_DECAY, 3};
 envelope::Segment env4SustainMenu{STRING_FOR_SUSTAIN, STRING_FOR_ENV_SUSTAIN_MENU_TITLE, params::LOCAL_ENV_0_SUSTAIN, 3};
 envelope::Segment env4ReleaseMenu{STRING_FOR_RELEASE, STRING_FOR_ENV_RELEASE_MENU_TITLE, params::LOCAL_ENV_0_RELEASE, 3};
-envelope::kick_pitch::Amount env4KickPitchAmountMenu{STRING_FOR_PITCH, STRING_FOR_ENV_PITCH_MENU_TITLE, 3};
-envelope::kick_pitch::Time env4KickPitchTimeMenu{STRING_FOR_TIME, STRING_FOR_ENV_TIME_MENU_TITLE, 3};
-envelope::kick_pitch::Curve env4KickPitchCurveMenu{STRING_FOR_CURVE, STRING_FOR_ENV_CURVE_MENU_TITLE, 3};
-std::array<MenuItem*, 7> child14 = {
+std::array<MenuItem*, 4> child14 = {
     &env4AttackMenu,
     &env4DecayMenu,
     &env4SustainMenu,
     &env4ReleaseMenu,
-    &env4KickPitchAmountMenu,
-    &env4KickPitchTimeMenu,
-    &env4KickPitchCurveMenu,
 };
 envelope::EnvelopeMenu env4Menu{STRING_FOR_ENVELOPE_MENU_TITLE, child14, 3};
 lfo::Type lfo1TypeMenu{STRING_FOR_SHAPE, STRING_FOR_LFO_TYPE, LFO1_ID};

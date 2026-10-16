@@ -160,6 +160,7 @@ int32_t FilterSet::setConfig(q31_t lpfFrequency, q31_t lpfResonance, FilterMode 
 			if (SpecificFilter(lastLPFMode_).getFamily() != FilterFamily::VOWEL) {
 				lpfilter.formant.reset(lastLPFMode_ == FilterMode::OFF);
 			}
+			lpfilter.formant.setRaw(vowelRaw_);
 			filterGain = lpfilter.formant.configure(lpfFrequency, lpfResonance, lpfMode_, lpfMorph, filterGain);
 		}
 		else {

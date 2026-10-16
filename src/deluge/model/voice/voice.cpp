@@ -368,9 +368,6 @@ bool Voice::noteOn(ModelStackWithSoundFlags* modelStack, int32_t newNoteCodeBefo
 
 		// Reset sine shaper state (DC blocker, feedback, stereo LFO)
 		sineShaperState = dsp::SineShaperVoiceState{};
-
-		kickSamples = 0; // Kick mode: the pitch envelopes start over
-		clickPos = 0;    // ... and so does the click sample
 	}
 
 	// Porta
@@ -398,10 +395,6 @@ bool Voice::noteOn(ModelStackWithSoundFlags* modelStack, int32_t newNoteCodeBefo
 	// them *after* initial patching is performed.
 	for (int32_t e = 0; e < kNumEnvelopes; e++) {
 		sourceValues[util::to_underlying(PatchSource::ENVELOPE_0) + e] = envelopes[e].noteOn(e, &sound, this);
-		if (isKickPitchEnvelope(e)) {
-			sourceValues[util::to_underlying(PatchSource::ENVELOPE_0) + e] =
-			    kickPitchEnvelopeOutput(e, static_cast<float>(kickSamples));
-		}
 	}
 
 	if (resetEnvelopes) {
@@ -550,9 +543,6 @@ activenessDetermined:
 			for (int32_t m = 0; m < kNumModulators; m++) {
 				if (sound.modulatorRetriggerPhase[m] != 0xFFFFFFFF) {
 					unisonParts[u].modulatorPhase[m] = initialPhase + sound.modulatorRetriggerPhase[m];
-				}
-				else if (sound.synthMode == SynthMode::KICK && resetEnvelopes) {
-					unisonParts[u].modulatorPhase[m] = initialPhase; // Kick mode: every hit the same
 				}
 				if (resetEnvelopes) {
 					unisonParts[u].modulatorFeedback[m] = 0;
@@ -752,7 +742,7 @@ makeInactive: // Frequency too high to render! (Higher than 22.05kHz)
 		}
 	}
 
-	// FM modulators (in Kick mode they bend the oscillators)
+	// FM modulators
 	if (sound.usesModulators()) {
 		for (int32_t m = 0; m < kNumModulators; m++) {
 
@@ -983,17 +973,10 @@ uint32_t Voice::getLocalLFOPhaseIncrement(LFO_ID lfoId, deluge::modulation::para
 			if (e == 0 && overrideAmplitudeEnvelopeReleaseRate) {
 				release = overrideAmplitudeEnvelopeReleaseRate;
 			}
-			// Kick mode's pitch envelopes put out their sweep wherever else they're patched
-			if (isKickPitchEnvelope(e)) {
-				sourceValues[util::to_underlying(PatchSource::ENVELOPE_0) + e] =
-				    kickPitchEnvelopeOutput(e, static_cast<float>(kickSamples + numSamples));
-			}
-			else {
-				sourceValues[util::to_underlying(PatchSource::ENVELOPE_0) + e] =
-				    envelopes[e].render(numSamples, paramFinalValues[params::LOCAL_ENV_0_ATTACK + e],
-				                        paramFinalValues[params::LOCAL_ENV_0_DECAY + e],
-				                        paramFinalValues[params::LOCAL_ENV_0_SUSTAIN + e], release, decayTableSmall8);
-			}
+			sourceValues[util::to_underlying(PatchSource::ENVELOPE_0) + e] =
+			    envelopes[e].render(numSamples, paramFinalValues[params::LOCAL_ENV_0_ATTACK + e],
+			                        paramFinalValues[params::LOCAL_ENV_0_DECAY + e],
+			                        paramFinalValues[params::LOCAL_ENV_0_SUSTAIN + e], release, decayTableSmall8);
 			uint32_t anyChange = (old != sourceValues[util::to_underlying(PatchSource::ENVELOPE_0) + e]);
 			sourcesChanged |= anyChange << (util::to_underlying(PatchSource::ENVELOPE_0) + e);
 		}
@@ -1286,9 +1269,18 @@ skipAutoRelease: {}
 	// Checking if filters should run now happens within the filterset
 	FilterMode lpfMode = doLPF ? sound.lpfMode : FilterMode::OFF;
 	FilterMode hpfMode = doHPF ? sound.hpfMode : FilterMode::OFF;
+	// The Vowel filter's formant shift takes its modulation added on, both ways around the knob - so an LFO sweeps the
+	// formants up and down even with the shift at 0. (LPF morph is a linear param: its cables multiply, which can never
+	// take it below the knob, and does nothing at all with the knob at 0.)
+	q31_t lpfMorph = paramFinalValues[params::LOCAL_LPF_MORPH];
+	if (lpfMode == FilterMode::VOWEL) {
+		lpfMorph = add_saturate(patcher.finalLinearValueWithoutCables(params::LOCAL_LPF_MORPH, sound, *paramManager),
+		                        patcher.sumCablesAdditively(params::LOCAL_LPF_MORPH, *paramManager));
+	}
+	filterSet.setVowelRaw(sound.vowelRaw);
 	filterGain = filterSet.setConfig(
-	    paramFinalValues[params::LOCAL_LPF_FREQ], paramFinalValues[params::LOCAL_LPF_RESONANCE], lpfMode,
-	    paramFinalValues[params::LOCAL_LPF_MORPH], paramFinalValues[params::LOCAL_HPF_FREQ],
+	    paramFinalValues[params::LOCAL_LPF_FREQ], paramFinalValues[params::LOCAL_LPF_RESONANCE], lpfMode, lpfMorph,
+	    paramFinalValues[params::LOCAL_HPF_FREQ],
 	    (paramFinalValues[params::LOCAL_HPF_RESONANCE]), // >> StorageManager::devVarA) << StorageManager::devVarA,
 	    hpfMode, paramFinalValues[params::LOCAL_HPF_MORPH], sound.volumeNeutralValueForUnison << 1, sound.filterRoute,
 	    false, nullptr); // Level adjustment for unison now happens *before* the filter!
@@ -1359,7 +1351,7 @@ skipAutoRelease: {}
 
 		filterGainLastTime = filterGain;
 
-		// If FM (or Kick, where the modulators bend the oscillators), cache whether modulators are active
+		// If FM, cache whether modulators are active
 		if (sound.usesModulators()) {
 			for (int32_t m = 0; m < kNumModulators; m++) {
 				modulatorsActive[m] =
@@ -1436,20 +1428,11 @@ skipAutoRelease: {}
 		// Perform the same limiting that we do above for the oscillators
 		int32_t noiseAmplitude = std::min(n, (int32_t)268435455) >> 2;
 
-		// Kick mode with a click sample: that plays instead of the noise, in mono like the noise
-		if (synthMode == SynthMode::KICK && sound.clickSample.loaded()) {
-			sound.clickSample.render(oscBuffer, numSamples, &clickPos, noiseAmplitude);
-			if (channels == 2) {
-				memset(oscBuffer + numSamples, 0, numSamples * sizeof(int32_t));
-			}
-		}
-		else {
-			int32_t* __restrict__ thisSample = oscBuffer;
-			do {
-				*thisSample = multiply_32x32_rshift32(getNoise(), noiseAmplitude);
-				thisSample++;
-			} while (thisSample != oscBufferEnd);
-		}
+		int32_t* __restrict__ thisSample = oscBuffer;
+		do {
+			*thisSample = multiply_32x32_rshift32(getNoise(), noiseAmplitude);
+			thisSample++;
+		} while (thisSample != oscBufferEnd);
 
 		anythingInOscBuffer = true;
 	}
@@ -1457,10 +1440,6 @@ skipAutoRelease: {}
 	// Otherwise, clear the buffer
 	else {
 		memset(oscBuffer, 0, channels * numSamples * sizeof(int32_t));
-		// A click sample at level 0 keeps time, so turning it up mid-note doesn't start it late
-		if (synthMode == SynthMode::KICK && sound.clickSample.loaded()) {
-			sound.clickSample.skip(numSamples, &clickPos);
-		}
 	}
 
 	// Even if first rendering into a local Voice buffer, we'll very often still just do panning at the Sound level
@@ -1475,22 +1454,14 @@ skipAutoRelease: {}
 
 	uint32_t sourcesToRenderInStereo = 0;
 
-	// Normal mode: subtractive / samples. We do each source first, for all unison. Kick mode works the same way, except
-	// that its basic oscillators render per sample further down
-	if (synthMode == SynthMode::SUBTRACTIVE || synthMode == SynthMode::KICK) {
+	// Normal mode: subtractive / samples. We do each source first, for all unison
+	if (synthMode == SynthMode::SUBTRACTIVE) {
 		bool unisonPartBecameInactive = false;
 
 		uint32_t oscSyncPhaseIncrement[kMaxNumVoicesUnison];
 
-		// Kick mode: the oscillators rendered the regular way follow the pitch envelopes once per buffer
-		const int32_t sourcePitchAdjust =
-		    (synthMode == SynthMode::KICK) ? kickBlockPitchAdjust(overallPitchAdjust, numSamples) : overallPitchAdjust;
-
 		// First, render any mono sources, and note whether there are any stereo ones
 		for (int32_t s = 0; s < kNumSources; s++) {
-			if (isKickPerSampleSource(s)) {
-				continue; // See renderKickModeSources() below
-			}
 
 			uint32_t* getPhaseIncrements = nullptr;
 			bool getOutAfterGettingPhaseIncrements = false;
@@ -1516,7 +1487,7 @@ skipAutoRelease: {}
 
 			if (!sound.sources[s].renderInStereo(&sound, (SampleHolder*)guides[s].audioFileHolder)) {
 				renderBasicSource(sound, paramManager, s, oscBuffer, numSamples, false, sourceAmplitudesNow[s],
-				                  &unisonPartBecameInactive, sourcePitchAdjust, (s == 1) && doingOscSync, oscSyncPos,
+				                  &unisonPartBecameInactive, overallPitchAdjust, (s == 1) && doingOscSync, oscSyncPos,
 				                  oscSyncPhaseIncrement, sourceAmplitudeIncrements[s], getPhaseIncrements,
 				                  getOutAfterGettingPhaseIncrements, sourceWaveIndexIncrements[s]);
 				anythingInOscBuffer = true;
@@ -1526,8 +1497,8 @@ skipAutoRelease: {}
 			}
 		}
 
-		// If any sources need rendering in stereo - or Kick mode's per-sample oscillators need it for unison spread
-		if (sourcesToRenderInStereo || (synthMode == SynthMode::KICK && stereoUnison)) {
+		// If any sources need rendering in stereo
+		if (sourcesToRenderInStereo) {
 
 			// If we've already got something mono in the buffer, copy that to the right-channel buffer
 			if (anythingInOscBuffer) {
@@ -1553,7 +1524,7 @@ skipAutoRelease: {}
 					    getPhaseIncrements && !sound.isSourceActiveCurrently(s, paramManager);
 
 					renderBasicSource(sound, paramManager, s, oscBuffer, numSamples, true, sourceAmplitudesNow[s],
-					                  &unisonPartBecameInactive, sourcePitchAdjust, (s == 1) && doingOscSync,
+					                  &unisonPartBecameInactive, overallPitchAdjust, (s == 1) && doingOscSync,
 					                  oscSyncPos, oscSyncPhaseIncrement, sourceAmplitudeIncrements[s],
 					                  getPhaseIncrements, getOutAfterGettingPhaseIncrements,
 					                  sourceWaveIndexIncrements[s]);
@@ -1561,17 +1532,6 @@ skipAutoRelease: {}
 			}
 
 			didStereoTempBuffer = true;
-		}
-
-		// Kick mode: sine / triangle / square / saw oscillators run per sample, under the pitch envelopes and the FM
-		// modulators
-		if (synthMode == SynthMode::KICK) {
-			renderKickModeSources(paramManager, oscBuffer, numSamples, didStereoTempBuffer, stereoUnison,
-			                      sourceAmplitudesNow, sourceAmplitudeIncrements, modulatorsActive, overallPitchAdjust);
-			anythingInOscBuffer = true;
-			if (kickSamples < (1u << 30)) {
-				kickSamples += numSamples;
-			}
 		}
 
 		// If any unison part became inactive (for either source), and no noise-source, then it might be time to

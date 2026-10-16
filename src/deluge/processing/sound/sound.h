@@ -20,7 +20,6 @@
 #include "definitions_cxx.hpp"
 #include "dsp/saturation.hpp"
 #include "model/mod_controllable/mod_controllable_audio.h"
-#include "model/sample/click_sample.h"
 #include "model/sample/sample_recorder.h"
 #include "model/voiced.h"
 #include "modulation/arpeggiator.h"
@@ -33,7 +32,6 @@
 #include "modulation/sidechain/sidechain.h"
 #include "processing/engines/audio_engine.h"
 #include "processing/source.h"
-#include "util/d_string.h"
 #include "util/misc.h"
 #include <bitset>
 #include <memory>
@@ -146,32 +144,10 @@ public:
 	SynthMode synthMode = SynthMode::SUBTRACTIVE;
 	bool modulator1ToModulator0 = false;
 
-	/// FM modulators run in FM mode, and in Kick mode (where they bend the oscillators' phase)
-	[[nodiscard]] bool usesModulators() const { return synthMode == SynthMode::FM || synthMode == SynthMode::KICK; }
-	/// Oscillators of every type (samples, wavetables...) - subtractive and Kick mode
-	[[nodiscard]] bool hasSubtractiveOscillators() const {
-		return synthMode == SynthMode::SUBTRACTIVE || synthMode == SynthMode::KICK;
-	}
-
-	/// Kick mode: time (steps, see dsp::kick_mode::pitchTimeMs()) and curve of the two pitch envelopes (envelopes 3
-	/// and 4; their amounts live in the envelopes' sustain params). Defaults: a fast click and a slower body.
-	uint8_t kickPitchTime[2] = {25, 58}; // ~4 ms, ~60 ms
-	int8_t kickPitchCurve[2] = {30, 10};
-
-	/// Oscillators that were saved as the old Kick oscillator type, plus the settings of theirs that carry over to the
-	/// Kick synth mode - only used while loading, see convertLegacyKickOscillators()
-	uint8_t legacyKickSources{0};
-	uint8_t legacyKickClickTime{45};
-	int8_t legacyKickClickCurve{30};
-	int8_t legacyKickBodyCurve{10};
-	void convertLegacyKickOscillators(ParamManager* paramManager);
-
-	/// Kick mode: a sample the noise oscillator plays in place of noise (the click layer), and its file
-	ClickSample clickSample;
-	String clickSamplePath;
-	/// Loads a WAV as the click sample - keeps the current one if that fails
-	Error setClickSample(char const* path);
-	void clearClickSample();
+	/// The FM modulators run (FM mode)
+	[[nodiscard]] bool usesModulators() const { return synthMode == SynthMode::FM; }
+	/// Oscillators of every type - samples, wavetables... (subtractive mode)
+	[[nodiscard]] bool hasSubtractiveOscillators() const { return synthMode == SynthMode::SUBTRACTIVE; }
 
 	int32_t volumeNeutralValueForUnison{0};
 

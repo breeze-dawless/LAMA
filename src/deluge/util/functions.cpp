@@ -878,7 +878,7 @@ OscType stringToOscType(char const* string) {
 		return OscType::SINE; // The DX7 engine is gone
 	}
 	else if (!strcmp(string, "kick")) {
-		return OscType::SINE; // The Kick oscillator type is gone - see Sound::convertLegacyKickOscillators()
+		return OscType::SINE; // The Kick oscillator type of earlier custom builds is gone
 	}
 	else {
 		return OscType::TRIANGLE;
@@ -942,9 +942,6 @@ char const* synthModeToString(SynthMode synthMode) {
 	case SynthMode::FM:
 		return "fm";
 
-	case SynthMode::KICK:
-		return "kick";
-
 	default:
 		return "subtractive";
 	}
@@ -954,11 +951,8 @@ SynthMode stringToSynthMode(char const* string) {
 	if (!strcmp(string, "fm")) {
 		return SynthMode::FM;
 	}
-	else if (!strcmp(string, "kick")) {
-		return SynthMode::KICK;
-	}
 	else {
-		return SynthMode::SUBTRACTIVE;
+		return SynthMode::SUBTRACTIVE; // Also "ringmod" and "kick" from earlier builds - both modes are gone
 	}
 }
 

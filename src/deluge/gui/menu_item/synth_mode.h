@@ -16,39 +16,17 @@
  */
 #pragma once
 #include "definitions_cxx.hpp"
-#include "dsp/kick_mode.hpp"
 #include "gui/menu_item/selection.h"
 #include "gui/ui/sound_editor.h"
 #include "gui/views/view.h"
 #include "model/instrument/kit.h"
 #include "model/song/song.h"
-#include "modulation/params/param_set.h"
 #include "processing/sound/sound.h"
 #include "processing/sound/sound_drum.h"
-#include "util/functions.h"
 
 namespace deluge::gui::menu_item {
 class SynthModeSelection final : public Selection {
 public:
-	/// A sound that's just become a Kick gets a kick right away: the pitch envelopes sweep a click and a body, and
-	/// envelope 1 decays out instead of sustaining
-	static void setUpKickDefaults(PatchedParamSet& params) {
-		namespace p = deluge::modulation::params;
-		namespace km = deluge::dsp::kick_mode;
-		params.params[p::LOCAL_ENV_2_SUSTAIN].setCurrentValueBasicForSetup(
-		    km::bipolarPresetFromSteps(36, km::kAmountMax));
-		params.params[p::LOCAL_ENV_3_SUSTAIN].setCurrentValueBasicForSetup(
-		    km::bipolarPresetFromSteps(12, km::kAmountMax));
-		params.params[p::LOCAL_ENV_0_ATTACK].setCurrentValueBasicForSetup(
-		    getParamFromUserValue(p::LOCAL_ENV_0_ATTACK, 0));
-		params.params[p::LOCAL_ENV_0_DECAY].setCurrentValueBasicForSetup(
-		    getParamFromUserValue(p::LOCAL_ENV_0_DECAY, 28));
-		params.params[p::LOCAL_ENV_0_SUSTAIN].setCurrentValueBasicForSetup(
-		    getParamFromUserValue(p::LOCAL_ENV_0_SUSTAIN, 0));
-		params.params[p::LOCAL_ENV_0_RELEASE].setCurrentValueBasicForSetup(
-		    getParamFromUserValue(p::LOCAL_ENV_0_RELEASE, 28));
-	}
-
 	using Selection::Selection;
 	void readCurrentValue() override { this->setValue(soundEditor.currentSound->synthMode); }
 	bool usesAffectEntire() override { return true; }
@@ -69,19 +47,7 @@ public:
 		}
 		// Or, the normal case of just one sound
 		else {
-			const bool becomesKick =
-			    current_value == ::SynthMode::KICK && soundEditor.currentSound->synthMode != ::SynthMode::KICK;
 			soundEditor.currentSound->setSynthMode(current_value, currentSong);
-			if (becomesKick) {
-				setUpKickDefaults(*soundEditor.currentParamManager->getPatchedParamSet());
-				// Kick range: oscillators still at their default pitch go two octaves down (a kit row's C3 becomes C1,
-				// 65 Hz). The voices are gone already (setSynthMode() killed them), so the next note picks this up.
-				for (Source& source : soundEditor.currentSound->sources) {
-					if (source.transpose == 0 && source.oscType != OscType::SAMPLE) {
-						source.transpose = -24;
-					}
-				}
-			}
 		}
 		view.setKnobIndicatorLevels();
 	}
@@ -91,7 +57,6 @@ public:
 		return {
 		    l10n::getView(l10n::String::STRING_FOR_SUBTRACTIVE),
 		    l10n::getView(l10n::String::STRING_FOR_FM),
-		    l10n::getView(l10n::String::STRING_FOR_KICK),
 		};
 	}
 };

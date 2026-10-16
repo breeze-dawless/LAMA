@@ -70,8 +70,10 @@
 #include "gui/menu_item/eq/eq_unpatched_param.h"
 #include "gui/menu_item/file_selector.h"
 #include "gui/menu_item/filter/filter_container.h"
+#include "gui/menu_item/filter/lpf_menu.h"
 #include "gui/menu_item/filter/mode.h"
 #include "gui/menu_item/filter/param.h"
+#include "gui/menu_item/filter/vowel_raw.h"
 #include "gui/menu_item/filter_route.h"
 #include "gui/menu_item/firmware/version.h"
 #include "gui/menu_item/flash/status.h"
@@ -150,7 +152,6 @@
 #include "gui/menu_item/note_row/iterance_step_toggle.h"
 #include "gui/menu_item/note_row/probability.h"
 #include "gui/menu_item/osc/audio_recorder.h"
-#include "gui/menu_item/osc/click_sample.h"
 #include "gui/menu_item/osc/phi_morph_zone.h"
 #include "gui/menu_item/osc/phi_stereo_zone.h"
 #include "gui/menu_item/osc/pulse_width.h"
@@ -968,8 +969,10 @@ filter::UnpatchedFilterParam globalLPFResMenu{STRING_FOR_RESONANCE, STRING_FOR_L
                                               filter::FilterSlot::LPF, filter::FilterParamType::RESONANCE};
 filter::UnpatchedFilterParam globalLPFMorphMenu{STRING_FOR_MORPH, STRING_FOR_LPF_MORPH, params::UNPATCHED_LPF_MORPH,
                                                 filter::FilterSlot::LPF, filter::FilterParamType::MORPH};
-HorizontalMenu globalLPFMenu{STRING_FOR_LPF,
-                             {&lpfModeMenu, &globalLPFFreqMenu, &globalLPFResMenu, &globalLPFMorphMenu}};
+// Its own Raw instance - a MenuItem's parent is set to whichever HorizontalMenu it's in (see saturationDriveMenu)
+filter::VowelRaw globalLpfVowelRawMenu{STRING_FOR_VOWEL_RAW};
+filter::LpfMenu globalLPFMenu{
+    STRING_FOR_LPF, {&lpfModeMenu, &globalLPFFreqMenu, &globalLPFResMenu, &globalLPFMorphMenu, &globalLpfVowelRawMenu}};
 
 // HPF Menu
 filter::UnpatchedFilterParam globalHPFFreqMenu{STRING_FOR_FREQUENCY, STRING_FOR_HPF_FREQUENCY,
@@ -2175,47 +2178,6 @@ deluge::vector<HorizontalMenu*> horizontalMenusChainForSound = {
 	&sidechainMenu, &audioCompMenu, &stutterMenu,
 	&arpMenuGroup, &randomizerMenu
 };
-
-// Kick synth mode: envelopes 3 and 4 are pitch envelopes. Their pads (the second layer of the envelope 1 / 2 pads) open
-// the pitch envelope controls in place of attack / decay / sustain: attack -> pitch, decay -> time, sustain -> curve.
-// The noise pad's second layer opens the click sample (the noise oscillator can play a sample in Kick mode).
-namespace {
-struct KickPad {
-	uint8_t x;
-	uint8_t y;
-	MenuItem* item;
-};
-
-const KickPad kickPads[] = {
-    {8, 3, &env3KickPitchAmountMenu}, {8, 2, &env3KickPitchTimeMenu}, {8, 1, &env3KickPitchCurveMenu},
-    {9, 3, &env4KickPitchAmountMenu}, {9, 2, &env4KickPitchTimeMenu}, {9, 1, &env4KickPitchCurveMenu},
-    {2, 7, &clickSampleMenu},
-};
-} // namespace
-
-MenuItem* getKickShortcut(Sound* sound, int32_t x, int32_t y, bool secondLayer) {
-	if (!secondLayer || sound->getSynthMode() != SynthMode::KICK) {
-		return nullptr;
-	}
-	for (const KickPad& pad : kickPads) {
-		if (pad.x == x && pad.y == y) {
-			return pad.item;
-		}
-	}
-	return nullptr;
-}
-
-bool getKickShortcutPad(const MenuItem* item, int32_t* x, int32_t* y, bool* secondLayer) {
-	for (const KickPad& pad : kickPads) {
-		if (item == pad.item) {
-			*x = pad.x;
-			*y = pad.y;
-			*secondLayer = true;
-			return true;
-		}
-	}
-	return false;
-}
 
 deluge::vector<HorizontalMenu*> horizontalMenusChainForKit = {
 	&kitClipMasterMenu,

@@ -108,6 +108,7 @@ void ModControllableAudio::cloneFrom(ModControllableAudio* other) {
 	clippingMix = other->clippingMix;
 	clippingTone = other->clippingTone;
 	foldTone = other->foldTone;
+	vowelRaw = other->vowelRaw;
 	subBassMonoAmount = other->subBassMonoAmount;
 	subBassMonoFreq = other->subBassMonoFreq;
 	modFXType_ = other->modFXType_;
@@ -599,6 +600,9 @@ void ModControllableAudio::writeAttributesToFile(Serializer& writer) {
 	}
 	if (foldTone) {
 		writer.writeAttribute("foldTone", foldTone);
+	}
+	if (vowelRaw) {
+		writer.writeAttribute("vowelRaw", vowelRaw);
 	}
 	writer.writeAttribute("subBassMonoAmount", subBassMonoAmount);
 	writer.writeAttribute("subBassMonoFreq", subBassMonoFreq);
@@ -1229,6 +1233,10 @@ Error ModControllableAudio::readTagFromFile(Deserializer& reader, char const* ta
 	else if (!strcmp(tagName, "foldTone")) {
 		foldTone = reader.readTagOrAttributeValueInt();
 		reader.exitTag("foldTone");
+	}
+	else if (!strcmp(tagName, "vowelRaw")) {
+		vowelRaw = std::clamp<int32_t>(reader.readTagOrAttributeValueInt(), 0, 50);
+		reader.exitTag("vowelRaw");
 	}
 	else if (!strcmp(tagName, "subBassMonoAmount")) {
 		subBassMonoAmount = reader.readTagOrAttributeValueInt();

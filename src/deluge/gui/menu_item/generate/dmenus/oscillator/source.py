@@ -19,15 +19,6 @@ noise = Menu(
     name="STRING_FOR_NOISE_LEVEL",
 )
 
-click = Menu(
-    "osc::ClickSampleBrowse",
-    "clickSampleMenu",
-    ["{name}"],
-    "oscillator/click_sample.md",
-    name="STRING_FOR_CLICK_SAMPLE",
-    available_when="The synth mode is Kick",
-)
-
 byOsc = {}
 volumes = []
 

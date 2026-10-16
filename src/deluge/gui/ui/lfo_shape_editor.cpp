@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <cstring>
 #include <new>
+#include <span>
 #include <type_traits>
 
 using deluge::modulation::LFOShape;
@@ -41,12 +42,54 @@ LFOShapeEditor lfoShapeEditor{};
 namespace {
 
 constexpr int32_t kNumPresets = static_cast<int32_t>(LFOShape::Preset::NUM_PRESETS);
-constexpr const char* kPresetNames[kNumPresets] = {"Triangle", "Sine", "Saw up", "Saw down", "Square"};
+constexpr const char* kPresetNames[kNumPresets] = {
+    "Triangle",
+    "Sine",
+    "Saw up",
+    "Saw down",
+    "Square",
+    "Pulse 25%",
+    "Trapezoid",
+    "Stairs",
+    "Exp decay",
+    "Exp rise",
+    "Swell",
+    "Shark fin",
+    "Bumps",
+    "S-curve",
+    "Fin x3",
+    "Decay x3",
+    "Decay x3 round",
+    "Tresillo",
+    "Tresillo round",
+    "3 over 2",
+    "3 over 2 round",
+    "Decay x5",
+    "Decay x5 round",
+    "Euclid 7/16",
+    "Euclid 7/16 round",
+    "Euclid 7/12",
+    "Euclid 7/12 round",
+    "Two-step",
+    "Two-step round",
+    "3-3-3-3-2-2",
+    "3-3-3-3-2-2 round",
+    "Ratchet",
+    "Ratchet round",
+    "Wobble 3-3-2",
+    "Ramps 3-3-2",
+    "Bounce",
+    "Swing",
+    "Heartbeat",
+    "Zigzag",
+    "Chaos",
+};
 
 constexpr int32_t kValueStep = LFOShape::kMaxValue / 50;      ///< 2 % of the height per detent...
 constexpr int32_t kFineValueStep = LFOShape::kMaxValue / 200; ///< ...0.5 % with shift
 constexpr int32_t kBendStep = 4;                              ///< Of LFOShape::kMaxCurve = 100
 constexpr int32_t kMoveStepsPerPage = 64;                     ///< X encoder steps across the visible part
+constexpr int32_t kFeedbackMs = 600;                          ///< How long an edit's text stays after the last change
 
 /// Pad row (0 = bottom) showing a value: the height split into eight equal bands
 int32_t rowForValue(int32_t value) {
@@ -77,6 +120,140 @@ bool sameShape(const LFOShape& a, const LFOShape& b) {
 	return true;
 }
 
+/// Puts new content into the part of a shape from start to start + width (the page shown while zoomed in), the rest
+/// of the shape as it was. The content: its points, in order, the first one at start - and the value its last segment
+/// runs to at the part's end. Where content and rest meet, the shape jumps if it has to, so that both keep their
+/// values, and segments cut there keep their bends' look. Returns false if the points don't fit (result is then
+/// incomplete).
+bool replacePart(const LFOShape& shape, LFOShape& result, uint32_t start, uint32_t width,
+                 std::span<const LFOShape::Point> content, int16_t contentEnd) {
+	const uint32_t end = start + width; // Up to 65536, the cycle's end
+	const bool wholeCycle = (start == 0 && end >= 65536);
+	auto oldValue = [&](uint32_t x) { return static_cast<int16_t>(shape.valueAt((x & 0xFFFF) << 16) >> 16); };
+	auto segmentEnd = [&](int32_t i) {
+		return (i == shape.numPoints() - 1) ? 65536u : static_cast<uint32_t>(shape.point(i + 1).x);
+	};
+	auto add = [&](uint32_t x, int16_t y, int32_t curve) {
+		const int32_t index = result.setPoint(static_cast<uint16_t>(x), y);
+		if (index >= 0) {
+			result.setCurve(index, curve);
+		}
+		return index >= 0;
+	};
+
+	result = shape;
+	for (int32_t i = result.numPoints() - 1; i > 0; i--) { // The first point stays: the content's first replaces it
+		if (result.point(i).x >= start && result.point(i).x < end) {
+			result.removePoint(i);
+		}
+	}
+
+	if (!wholeCycle) {
+		const uint32_t beforeStart = (start + 65535) & 0xFFFF; // Wraps round to the cycle's end for the first page
+		// After the part, the shape carries on as it was: from a point at the part's end (one that was there stays)
+		if (end < 65536 && shape.pointAt(static_cast<uint16_t>(end)) < 0) {
+			const int32_t i = shape.segmentAt(static_cast<uint16_t>(end));
+			const uint32_t x0 = shape.point(i).x;
+			const float from = static_cast<float>(end - x0) / static_cast<float>(segmentEnd(i) - x0);
+			if (!add(end, oldValue(end), LFOShape::curveForPiece(shape.point(i).curve, from, 1.0f))) {
+				return false;
+			}
+		}
+		// Before it, the shape runs up to the value it had and jumps from there
+		const bool jumpIn = oldValue(start) != content[0].y && shape.pointAt(static_cast<uint16_t>(beforeStart)) < 0;
+		if (jumpIn && !add(beforeStart, oldValue(beforeStart), 0)) {
+			return false;
+		}
+		// The segment running in, now cut short, keeps its look
+		const int32_t i = shape.segmentAt(static_cast<uint16_t>(beforeStart));
+		const uint32_t x0 = shape.point(i).x;
+		const uint32_t newEnd = jumpIn ? beforeStart : ((start == 0) ? 65536u : start);
+		const int32_t index = result.pointAt(static_cast<uint16_t>(x0));
+		if (index >= 0 && (start > 0 || i > 0) && newEnd > x0) {
+			const float to = static_cast<float>(newEnd - x0) / static_cast<float>(segmentEnd(i) - x0);
+			result.setCurve(index, LFOShape::curveForPiece(shape.point(i).curve, 0.0f, to));
+		}
+	}
+
+	for (const LFOShape::Point& p : content) {
+		if (!add(p.x, p.y, p.curve)) {
+			return false;
+		}
+	}
+	// The content's end: its last segment runs to contentEnd (jumping on to the rest of the shape right at the end)
+	const int16_t valueAtEnd = wholeCycle ? content[0].y : oldValue(end);
+	if (contentEnd != valueAtEnd && content.back().x < end - 1 && !add(end - 1, contentEnd, 0)) {
+		return false;
+	}
+	return true;
+}
+
+/// A preset squeezed into the part of a shape from start to start + width, see replacePart(). Over the whole cycle
+/// it's just the preset.
+bool loadPresetInto(const LFOShape& shape, LFOShape& result, LFOShape::Preset preset, uint32_t start, uint32_t width) {
+	LFOShape full;
+	full.loadPreset(preset);
+	LFOShape::Point content[LFOShape::kMaxPoints];
+	int32_t count = 0;
+	int32_t lastX = -1;
+	for (int32_t i = 0; i < full.numPoints(); i++) {
+		const LFOShape::Point& p = full.point(i);
+		// Points that land on the same spot (a jump) move apart
+		const int32_t x = std::max<int32_t>(static_cast<int32_t>(start + ((p.x * width) >> 16)), lastX + 1);
+		if (x >= static_cast<int32_t>(start + width)) {
+			break;
+		}
+		content[count++] = {static_cast<uint16_t>(x), p.y, p.curve};
+		lastX = x;
+	}
+	return replacePart(shape, result, start, width, {content, static_cast<size_t>(count)}, full.point(0).y);
+}
+
+/// The part of a shape from start to start + width played backwards, see replacePart()
+bool reversePart(const LFOShape& shape, LFOShape& result, uint32_t start, uint32_t width) {
+	const uint32_t end = start + width;
+	auto oldValue = [&](uint32_t x) { return static_cast<int16_t>(shape.valueAt((x & 0xFFFF) << 16) >> 16); };
+
+	// The part as nodes - its start, the points in it, its end - with the bend of the piece from each to the next
+	struct Node {
+		uint32_t x;
+		int16_t y;
+		int32_t curve;
+	};
+	Node nodes[LFOShape::kMaxPoints + 2];
+	int32_t count = 0;
+	nodes[count++] = {start, oldValue(start), 0};
+	for (int32_t i = 0; i < shape.numPoints(); i++) {
+		if (shape.point(i).x > start && shape.point(i).x < end) {
+			nodes[count++] = {shape.point(i).x, shape.point(i).y, 0};
+		}
+	}
+	nodes[count++] = {end, oldValue(end), 0}; // What the part runs to
+	// A jump right at the part's end (a point one step before it) belongs to the edge, not to the part: the part runs
+	// to that point's value. Backwards it would otherwise start with a one-step spike.
+	if (count >= 3 && nodes[count - 2].x == end - 1) {
+		nodes[count - 2].x = end;
+		count--;
+	}
+	for (int32_t j = 0; j < count - 1; j++) {
+		const int32_t i = shape.segmentAt(static_cast<uint16_t>(nodes[j].x));
+		const uint32_t x0 = shape.point(i).x;
+		const uint32_t x1 = (i == shape.numPoints() - 1) ? 65536u : static_cast<uint32_t>(shape.point(i + 1).x);
+		const float length = static_cast<float>(x1 - x0);
+		nodes[j].curve = LFOShape::curveForPiece(shape.point(i).curve, static_cast<float>(nodes[j].x - x0) / length,
+		                                         static_cast<float>(std::min(nodes[j + 1].x, x1) - x0) / length);
+	}
+
+	// Backwards: mirrored in time, the last piece first, every bend turned round
+	LFOShape::Point content[LFOShape::kMaxPoints + 1];
+	int32_t numContent = 0;
+	for (int32_t j = count - 1; j >= 1; j--) {
+		content[numContent++] = {static_cast<uint16_t>(start + end - nodes[j].x), nodes[j].y,
+		                         static_cast<int8_t>(-nodes[j - 1].curve)};
+	}
+	return replacePart(shape, result, start, width, {content, static_cast<size_t>(numContent)}, nodes[0].y);
+}
+
 } // namespace
 
 LFOShape* LFOShapeEditor::shape() {
@@ -98,6 +275,8 @@ bool LFOShapeEditor::opened() {
 	uiTimerManager.unsetTimer(TimerName::SHORTCUT_BLINK);
 	zoomLevel_ = 0;
 	page_ = 0;
+	feedbackShown_ = false;
+	yTurnedWhilePressed_ = true; // A Y encoder held since before opening adds nothing on release
 	select(0);
 	startHistory();
 	focusRegained();
@@ -110,8 +289,82 @@ ActionResult LFOShapeEditor::exitUI() {
 }
 
 void LFOShapeEditor::closeEditor() {
-	endGesture(); // The history stays, see startHistory()
+	endGesture();           // The history stays, see startHistory()
+	feedbackShown_ = false; // closeUI() stops its timer
 	closeUI(this);
+}
+
+void LFOShapeEditor::feedback(const char* text) {
+	if (!display->haveOLED()) {
+		display->displayPopup(text);
+		return;
+	}
+	snprintf(feedback_, sizeof(feedback_), "%s", text);
+	feedbackShown_ = true;
+	uiTimerManager.setTimer(TimerName::UI_SPECIFIC, kFeedbackMs); // Counts again from each new change
+	                                                              // Every edit ends with changed(), which draws it
+}
+
+ActionResult LFOShapeEditor::timerCallback() {
+	if (feedbackShown_) {
+		feedbackShown_ = false;
+		renderUIsForOled();
+	}
+	return ActionResult::DEALT_WITH;
+}
+
+void LFOShapeEditor::insertPointAfterSelected() {
+	LFOShape* s = shape();
+	if (s == nullptr) {
+		return;
+	}
+	if (s->numPoints() >= LFOShape::kMaxPoints) {
+		feedback("FULL");
+		return;
+	}
+	const uint32_t x0 = s->point(selected_).x;
+	const uint32_t x1 = (selected_ == s->numPoints() - 1) ? 65536u : s->point(selected_ + 1).x;
+	if (x1 - x0 < 2) {
+		feedback("NO ROOM");
+		return;
+	}
+	const uint32_t x = x0 + (x1 - x0) / 2;
+	beginEdit(Edit::OTHER);
+	// On the shape where it goes, and it takes over the segment's bend (see LFOShape::setPoint())
+	const int32_t index = s->setPoint(static_cast<uint16_t>(x), static_cast<int16_t>(s->valueAt(x << 16) >> 16));
+	select(index);
+	commitEdit();
+	char buffer[24];
+	snprintf(buffer, sizeof(buffer), "Added %d/%d", static_cast<int>(selected_ + 1), static_cast<int>(s->numPoints()));
+	feedback(buffer);
+}
+
+void LFOShapeEditor::reversePage() {
+	LFOShape* s = shape();
+	if (s == nullptr) {
+		return;
+	}
+	const uint32_t start = pageStart();
+	const uint32_t end = start + pageWidth();
+	LFOShape result;
+	if (!reversePart(*s, result, start, pageWidth())) {
+		feedback("FULL");
+		return;
+	}
+	const uint32_t selectedX = s->point(selected_).x;
+	beginEdit(Edit::OTHER);
+	*s = result;
+	// The selected point goes along with its part of the shape
+	selectAt((selectedX > start && selectedX < end) ? start + end - selectedX : start);
+	commitEdit();
+	if (display->haveOLED() && numPages() > 1) {
+		char buffer[24];
+		snprintf(buffer, sizeof(buffer), "Reversed %d/%d", static_cast<int>(page_ + 1), static_cast<int>(numPages()));
+		feedback(buffer);
+	}
+	else {
+		feedback(display->haveOLED() ? "Reversed" : "REV");
+	}
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -155,7 +408,9 @@ void LFOShapeEditor::startHistory() {
 
 void LFOShapeEditor::beginEdit(Edit edit) {
 	const uint32_t now = AudioEngine::audioSampleTimer;
-	const bool carriesOn = edit != Edit::OTHER && edit == lastEdit_ && selected_ == lastEditPoint_
+	// Presets replace the whole shape, so browsing on carries on whichever point was selected
+	const bool samePoint = (edit == Edit::PRESET) || selected_ == lastEditPoint_;
+	const bool carriesOn = edit != Edit::OTHER && edit == lastEdit_ && samePoint
 	                       && now - lastEditTime_ < static_cast<uint32_t>(kSampleRate);
 	lastEdit_ = edit;
 	lastEditPoint_ = selected_;
@@ -193,7 +448,7 @@ void LFOShapeEditor::stepHistory(int32_t steps) {
 		target = std::clamp<int32_t>(historyCursor_ + steps, 0, historyCount_ - 1);
 	}
 	if (target == historyCursor_) {
-		display->displayPopup(backwards ? "NO UNDO" : "NO REDO");
+		feedback(backwards ? "NO UNDO" : "NO REDO");
 		return;
 	}
 	historyCursor_ = target;
@@ -203,10 +458,10 @@ void LFOShapeEditor::stepHistory(int32_t steps) {
 		char buffer[24];
 		snprintf(buffer, sizeof(buffer), "%s %d/%d", backwards ? "UNDO" : "REDO", static_cast<int>(historyCursor_),
 		         static_cast<int>(historyCount_ - 1));
-		display->displayPopup(buffer);
+		feedback(buffer);
 	}
 	else {
-		display->displayPopup(backwards ? "UNDO" : "REDO");
+		feedback(backwards ? "UNDO" : "REDO");
 	}
 }
 
@@ -277,7 +532,7 @@ void LFOShapeEditor::zoom(int32_t direction) {
 	select(selected_); // The page with the selected point
 	char buffer[24];
 	snprintf(buffer, sizeof(buffer), "Zoom x%d", static_cast<int>(numPages()));
-	display->displayPopup(buffer);
+	feedback(buffer);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -322,7 +577,7 @@ void LFOShapeEditor::split(int32_t direction) {
 				}
 			}
 			if (s->numPoints() + count > LFOShape::kMaxPoints) {
-				display->displayPopup("FULL");
+				feedback("FULL");
 				return;
 			}
 			beginEdit(Edit::OTHER);
@@ -332,10 +587,10 @@ void LFOShapeEditor::split(int32_t direction) {
 			selectAt(keepX);
 			commitEdit();
 			snprintf(buffer, sizeof(buffer), "%d parts", 1 << level);
-			display->displayPopup(buffer);
+			feedback(buffer);
 			return;
 		}
-		display->displayPopup("MAX");
+		feedback("MAX");
 		return;
 	}
 
@@ -353,14 +608,14 @@ void LFOShapeEditor::split(int32_t direction) {
 		commitEdit();
 		if (level > 1) {
 			snprintf(buffer, sizeof(buffer), "%d parts", 1 << (level - 1));
-			display->displayPopup(buffer);
+			feedback(buffer);
 		}
 		else {
-			display->displayPopup("NO SPLIT");
+			feedback("NO SPLIT");
 		}
 		return;
 	}
-	display->displayPopup("NO SPLIT");
+	feedback("NO SPLIT");
 }
 
 void LFOShapeEditor::moveSelected(int32_t offset) {
@@ -369,7 +624,7 @@ void LFOShapeEditor::moveSelected(int32_t offset) {
 		return;
 	}
 	if (selected_ == 0) {
-		display->displayPopup("FIXED"); // The first point anchors the cycle at its start
+		feedback("FIXED"); // The first point anchors the cycle at its start
 		return;
 	}
 	const int32_t steps = Buttons::isShiftButtonPressed() ? kMoveStepsPerPage * 4 : kMoveStepsPerPage;
@@ -411,7 +666,7 @@ void LFOShapeEditor::bend(int32_t offset, bool segmentBefore) {
 	char buffer[24];
 	snprintf(buffer, sizeof(buffer), "%s %+d", segmentBefore ? "Bend <" : "Bend >",
 	         static_cast<int>(s->point(segment).curve * sign));
-	display->displayPopup(buffer);
+	feedback(buffer);
 }
 
 void LFOShapeEditor::deleteSelected() {
@@ -420,7 +675,7 @@ void LFOShapeEditor::deleteSelected() {
 		return;
 	}
 	if (selected_ == 0) {
-		display->displayPopup("FIXED");
+		feedback("FIXED");
 		return;
 	}
 	const int32_t index = selected_;
@@ -428,20 +683,36 @@ void LFOShapeEditor::deleteSelected() {
 	s->removePoint(index);
 	select(index - 1);
 	commitEdit();
-	display->displayPopup("DELETED");
+	feedback("DELETED");
 }
 
-void LFOShapeEditor::loadNextPreset() {
+void LFOShapeEditor::loadPreset(int32_t index) {
 	LFOShape* s = shape();
 	if (s == nullptr) {
 		return;
 	}
-	beginEdit(Edit::OTHER);
-	s->loadPreset(static_cast<LFOShape::Preset>(nextPreset_));
-	display->displayPopup(kPresetNames[nextPreset_]);
-	nextPreset_ = (nextPreset_ + 1) % kNumPresets;
-	zoomLevel_ = 0;
-	select(0);
+	presetIndex_ = ((index % kNumPresets) + kNumPresets) % kNumPresets;
+	// Zoomed in, it goes into the page shown (squeezed in, the rest of the shape stays), otherwise it's the whole shape
+	LFOShape result;
+	if (!loadPresetInto(*s, result, static_cast<LFOShape::Preset>(presetIndex_), pageStart(), pageWidth())) {
+		char buffer[24];
+		snprintf(buffer, sizeof(buffer), "%s FULL", kPresetNames[presetIndex_]);
+		feedback(display->haveOLED() ? buffer : "FULL");
+		return;
+	}
+	// Browsing through the presets on and on makes a single undo step
+	beginEdit(Edit::PRESET);
+	*s = result;
+	if (display->haveOLED()) {
+		char buffer[24];
+		snprintf(buffer, sizeof(buffer), "%s %d/%d", kPresetNames[presetIndex_], static_cast<int>(presetIndex_ + 1),
+		         static_cast<int>(kNumPresets));
+		feedback(buffer);
+	}
+	else {
+		feedback(kPresetNames[presetIndex_]);
+	}
+	selectAt(pageStart()); // Its first point
 	commitEdit();
 }
 
@@ -452,7 +723,7 @@ void LFOShapeEditor::popupPoint() {
 	}
 	char buffer[24];
 	snprintf(buffer, sizeof(buffer), "Point %d/%d", static_cast<int>(selected_ + 1), static_cast<int>(s->numPoints()));
-	display->displayPopup(buffer);
+	feedback(buffer);
 }
 
 void LFOShapeEditor::popupValue() {
@@ -462,7 +733,7 @@ void LFOShapeEditor::popupValue() {
 	}
 	char buffer[24];
 	snprintf(buffer, sizeof(buffer), "%+d%%", static_cast<int>(percent(s->point(selected_).y)));
-	display->displayPopup(buffer);
+	feedback(buffer);
 }
 
 void LFOShapeEditor::popupPosition() {
@@ -473,13 +744,13 @@ void LFOShapeEditor::popupPosition() {
 	const int32_t permille = static_cast<int32_t>(s->point(selected_).x) * 1000 / 65536;
 	char buffer[24];
 	snprintf(buffer, sizeof(buffer), "%d.%d%%", static_cast<int>(permille / 10), static_cast<int>(permille % 10));
-	display->displayPopup(buffer);
+	feedback(buffer);
 }
 
 void LFOShapeEditor::popupPage() {
 	char buffer[24];
 	snprintf(buffer, sizeof(buffer), "Page %d/%d", static_cast<int>(page_ + 1), static_cast<int>(numPages()));
-	display->displayPopup(buffer);
+	feedback(buffer);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -489,12 +760,29 @@ ActionResult LFOShapeEditor::buttonAction(deluge::hid::Button b, bool on, bool i
 	using namespace deluge::hid::button;
 	// Only these buttons belong to the editor. Everything else goes on to the usual handling - shift above all, whose
 	// release must get through or shift stays held (also after leaving).
-	const bool shiftYPress = (b == Y_ENC && on && Buttons::isShiftButtonPressed());
-	if (b != BACK && b != SELECT_ENC && b != SYNTH && b != KIT && b != MIDI && b != CV && !shiftYPress) {
+	if (b != BACK && b != SELECT_ENC && b != SYNTH && b != KIT && b != MIDI && b != CV && b != Y_ENC && b != SCALE_MODE
+	    && b != CROSS_SCREEN_EDIT) {
 		return ActionResult::NOT_DEALT_WITH;
 	}
 	if (inCardRoutine) {
 		return ActionResult::REMIND_ME_OUTSIDE_CARD_ROUTINE;
+	}
+
+	// Y encoder: shift + press loads the next preset; a press without turning (turning splits) adds a point on release
+	if (b == Y_ENC) {
+		if (on) {
+			yTurnedWhilePressed_ = false;
+			if (Buttons::isShiftButtonPressed()) {
+				yTurnedWhilePressed_ = true; // Not a point to add on release
+				loadPreset(presetIndex_ + 1);
+				changed();
+			}
+		}
+		else if (!yTurnedWhilePressed_) {
+			insertPointAfterSelected();
+			changed();
+		}
+		return ActionResult::DEALT_WITH;
 	}
 
 	if (!on) {
@@ -506,24 +794,19 @@ ActionResult LFOShapeEditor::buttonAction(deluge::hid::Button b, bool on, bool i
 		closeEditor();
 		return ActionResult::DEALT_WITH;
 	}
-	if (shiftYPress) {
-		loadNextPreset();
-	}
-	else {
-		const int32_t direction = (b == SYNTH || b == KIT) ? -1 : 1;
-		if (Buttons::isShiftButtonPressed()) {
-			if (numPages() > 1) {
-				showPage(page_ + direction);
-				popupPage();
-			}
-			else {
-				display->displayPopup("ZOOM IN");
-			}
+	// Scale / Cross Screen turn the page while zoomed in, as in the horizontal menus - round and round the cycle
+	if (b == SCALE_MODE || b == CROSS_SCREEN_EDIT) {
+		if (numPages() > 1) {
+			showPage((page_ + ((b == SCALE_MODE) ? numPages() - 1 : 1)) % numPages());
+			popupPage();
 		}
 		else {
-			selectStep(direction);
-			popupPoint();
+			feedback("ZOOM IN");
 		}
+	}
+	else {
+		selectStep((b == SYNTH || b == KIT) ? -1 : 1);
+		popupPoint();
 	}
 	changed();
 	return ActionResult::DEALT_WITH;
@@ -547,6 +830,10 @@ ActionResult LFOShapeEditor::padAction(int32_t x, int32_t y, int32_t velocity) {
 		}
 		else if (x == kDisplayWidth + 1 && (y == kUndoPadRow || y == kRedoPadRow)) {
 			stepHistory((y == kUndoPadRow) ? -1 : 1);
+			changed();
+		}
+		else if (x == kDisplayWidth + 1 && y == kReversePadRow) {
+			reversePage();
 			changed();
 		}
 		return ActionResult::DEALT_WITH;
@@ -578,7 +865,7 @@ ActionResult LFOShapeEditor::padAction(int32_t x, int32_t y, int32_t velocity) {
 		}
 	}
 	else if (firstInColumn < 0 && s->numPoints() >= LFOShape::kMaxPoints) {
-		display->displayPopup("FULL");
+		feedback("FULL");
 	}
 	else {
 		// A point already in this column gets the new height, otherwise there's a new point
@@ -614,7 +901,12 @@ ActionResult LFOShapeEditor::verticalEncoderAction(int32_t offset, bool inCardRo
 		return ActionResult::REMIND_ME_OUTSIDE_CARD_ROUTINE;
 	}
 	if (Buttons::isButtonPressed(deluge::hid::button::Y_ENC)) {
+		yTurnedWhilePressed_ = true;
 		split(offset);
+	}
+	else if (Buttons::isShiftButtonPressed()) {
+		// Browse the presets; from none yet, left starts at the last one
+		loadPreset((presetIndex_ < 0 && offset < 0) ? kNumPresets - 1 : presetIndex_ + offset);
 	}
 	else {
 		selectStep(offset);
@@ -706,6 +998,7 @@ bool LFOShapeEditor::renderSidebar(uint32_t whichRows, RGB image[][kDisplayWidth
 		image[kUndoPadRow][kDisplayWidth + 1] = canUndo() ? colours::red : colours::red.dim(3);
 		image[kRedoPadRow][kDisplayWidth + 1] = canRedo() ? colours::green : colours::green.dim(3);
 	}
+	image[kReversePadRow][kDisplayWidth + 1] = colours::magenta; // Plays the page shown backwards
 	return true;
 }
 
@@ -730,6 +1023,28 @@ void LFOShapeEditor::drawShape(oled_canvas::Canvas& canvas, const LFOShape& shap
 
 void LFOShapeEditor::renderOLED(oled_canvas::Canvas& canvas) {
 	LFOShape* s = shape();
+	if (feedbackShown_) {
+		// Instead of the title and page, in the title's font if it fits, like "+42%" - longer ones (preset names) small
+		constexpr int32_t y = 1 + OLED_MAIN_TOPMOST_PIXEL;
+		if (canvas.getStringWidthInPixels(feedback_, kTextTitleSizeY) <= OLED_MAIN_WIDTH_PIXELS) {
+			canvas.drawString(feedback_, 0, y, kTextTitleSpacingX, kTextTitleSizeY);
+		}
+		else {
+			canvas.drawString(feedback_, 0, y + 1, kTextSpacingX, kTextSpacingY);
+		}
+		canvas.drawHorizontalLine(kScreenTitleSeparatorY, 0, OLED_MAIN_WIDTH_PIXELS - 1);
+	}
+	else {
+		renderTitle(canvas);
+	}
+	if (s == nullptr) {
+		return;
+	}
+	renderShape(canvas, *s);
+}
+
+void LFOShapeEditor::renderTitle(oled_canvas::Canvas& canvas) {
+	LFOShape* s = shape();
 	char title[24];
 	if (s != nullptr) {
 		snprintf(title, sizeof(title), "LFO%d P%d/%d", static_cast<int>(lfoId_ + 1), static_cast<int>(selected_ + 1),
@@ -747,10 +1062,9 @@ void LFOShapeEditor::renderOLED(oled_canvas::Canvas& canvas) {
 		snprintf(pageText, sizeof(pageText), "%d/%d", static_cast<int>(page_ + 1), static_cast<int>(numPages()));
 		canvas.drawStringAlignRight(pageText, y, kTextSpacingX, kTextSpacingY);
 	}
+}
 
-	if (s == nullptr) {
-		return;
-	}
+void LFOShapeEditor::renderShape(oled_canvas::Canvas& canvas, const LFOShape& s) {
 	constexpr int32_t kMinX = 2;
 	constexpr int32_t kMaxX = OLED_MAIN_WIDTH_PIXELS - 3;
 	constexpr int32_t kMinY = kScreenTitleSeparatorY + 3;
@@ -777,7 +1091,7 @@ void LFOShapeEditor::renderOLED(oled_canvas::Canvas& canvas) {
 	int32_t previousY = -1;
 	for (int32_t px = 0; px <= kWidth; px++) {
 		const uint32_t x = start + static_cast<uint32_t>(static_cast<uint64_t>(px) * visible / (kWidth + 1));
-		const int32_t y = toScreenY(s->valueAt(x << 16) >> 16);
+		const int32_t y = toScreenY(s.valueAt(x << 16) >> 16);
 		if (previousY >= 0) {
 			canvas.drawLine(kMinX + px - 1, previousY, kMinX + px, y);
 		}
@@ -785,13 +1099,13 @@ void LFOShapeEditor::renderOLED(oled_canvas::Canvas& canvas) {
 	}
 
 	// Its points: small squares, the selected one bigger and filled
-	for (int32_t i = 0; i < s->numPoints(); i++) {
-		const uint32_t pointX = s->point(i).x;
+	for (int32_t i = 0; i < s.numPoints(); i++) {
+		const uint32_t pointX = s.point(i).x;
 		if (pointX < start || pointX >= start + visible) {
 			continue;
 		}
 		const int32_t px = kMinX + static_cast<int32_t>(static_cast<uint64_t>(pointX - start) * kWidth / visible);
-		const int32_t py = toScreenY(s->point(i).y);
+		const int32_t py = toScreenY(s.point(i).y);
 		if (i == selected_) {
 			canvas.invertArea(px - 2, 5, py - 2, py + 2);
 			canvas.drawRectangle(px - 3, py - 3, px + 3, py + 3);

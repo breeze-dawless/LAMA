@@ -31,13 +31,17 @@ class Sound;
 /// - X encoder: moves the selected point in time. Pressed: zooms in / out (x1, x2, x4, x8).
 /// - Y encoder: selects the previous / next point. Pressed: to the right splits the visible part into ever more equal
 ///   parts (2, 4, 8, 16) by adding points along the shape, to the left takes the finest split back out.
-///   Shift + press: loads the next preset shape.
+///   Press (without turning): adds a point halfway to the next one, on the shape. Shift + press: loads the next
+///   preset shape, shift + turn: browses the presets both ways. Zoomed in, a preset only goes into the page shown,
+///   squeezed in - the rest of the shape stays.
 /// - Upper gold knob: the selected point's height. Press: deletes the selected point.
 /// - Lower gold knob: bends the segment after the selected point. Pressed: bends the segment before it.
-/// - Synth / Kit: previous point, MIDI / CV: next point. With shift: the previous / next page while zoomed in.
+/// - Synth / Kit: previous point, MIDI / CV: next point. Scale / Cross Screen: the previous / next page while zoomed
+///   in, as in the horizontal menus (round and round the cycle).
 /// - Select encoder: selects points, like the Y encoder. Shift + select: undo (left) / redo (right), a step per detent.
 /// - Sidebar: the first column's pads jump to a page; in the second column the bottom pad undoes and the one above it
-///   redoes (lit bright while there's a step to take). Turning a knob on and on is one step.
+///   redoes (lit bright while there's a step to take; turning a knob on and on is one step), and the fourth one up
+///   (magenta) plays the page shown backwards - the whole shape when not zoomed in.
 /// - Back or a select press: closes the editor, as in every menu. The undo history stays for when it opens again on the
 ///   same LFO.
 class LFOShapeEditor final : public UI {
@@ -58,6 +62,7 @@ public:
 	void modEncoderButtonAction(uint8_t whichModEncoder, bool on) override;
 	void modButtonAction(uint8_t whichButton, bool on) override {} // The mod buttons do nothing here
 	ActionResult exitUI() override;                                // Holding back (if it got here first)
+	ActionResult timerCallback() override;                         // Ends the feedback text, see feedback()
 	bool renderMainPads(uint32_t whichRows, RGB image[][kDisplayWidth + kSideBarWidth],
 	                    uint8_t occupancyMask[][kDisplayWidth + kSideBarWidth], bool drawUndefinedArea) override;
 	bool renderSidebar(uint32_t whichRows, RGB image[][kDisplayWidth + kSideBarWidth],
@@ -74,9 +79,10 @@ private:
 	static constexpr int32_t kMaxSplitLevel = 4; ///< 16 parts per page - one per pad column
 	static constexpr int32_t kUndoPadRow = 0;    ///< In the sidebar's second column
 	static constexpr int32_t kRedoPadRow = 1;
+	static constexpr int32_t kReversePadRow = 3; ///< Apart from undo / redo
 
 	/// What an edit was, so that turning the same knob on and on makes one undo step
-	enum class Edit : uint8_t { NONE, VALUE, MOVE, BEND_AFTER, BEND_BEFORE, OTHER };
+	enum class Edit : uint8_t { NONE, VALUE, MOVE, BEND_AFTER, BEND_BEFORE, PRESET, OTHER };
 
 	/// Undo history: the shape after every step (and the point selected then), for the LFO edited last. It outlives
 	/// the editor, so coming back to the same LFO can still undo. It lives in the general allocator - not in internal
@@ -92,7 +98,7 @@ private:
 	int32_t selected_{0};
 	int32_t zoomLevel_{0};
 	int32_t page_{0};
-	int32_t nextPreset_{0};
+	int32_t presetIndex_{-1}; ///< The preset loaded last, -1 = none yet
 
 	State* history_{nullptr};
 	int32_t historyCount_{0};
@@ -102,6 +108,9 @@ private:
 	Edit lastEdit_{Edit::NONE};
 	int32_t lastEditPoint_{-1};
 	uint32_t lastEditTime_{0};
+	bool yTurnedWhilePressed_{false}; ///< The Y encoder split while held: its release adds no point
+	bool feedbackShown_{false};
+	char feedback_[24]{};
 
 	void startHistory();       ///< On opening: carries on the history of the same LFO, or starts a new one
 	void beginEdit(Edit edit); ///< Before changing the shape: starts a new undo step unless it carries on the last
@@ -130,7 +139,14 @@ private:
 	void changeValue(int32_t offset);
 	void bend(int32_t offset, bool segmentBefore);
 	void deleteSelected();
-	void loadNextPreset();
+	void loadPreset(int32_t index);  ///< Wraps round the presets
+	void insertPointAfterSelected(); ///< Halfway to the next point, on the shape (so it doesn't change)
+	void reversePage();              ///< Plays the page shown backwards (the whole shape when not zoomed in)
+	void renderTitle(deluge::hid::display::oled_canvas::Canvas& canvas);
+	void renderShape(deluge::hid::display::oled_canvas::Canvas& canvas, const deluge::modulation::LFOShape& s);
+	/// What an edit did, shown for a moment: on the OLED in the title line (a popup would cover the shape), on 7SEG
+	/// as a popup
+	void feedback(const char* text);
 
 	void changed(); ///< Redraws everything after an edit
 	void popupPoint();

@@ -127,6 +127,7 @@ public:
 	uint8_t clippingMix = 50;   // 0-50 dry/wet, 50 = fully wet (matches pre-existing behaviour)
 	uint8_t clippingTone = 0;   // 0-50, pre-saturation clean-lowend crossover amount, 0 = bypassed
 	uint8_t foldTone = 0;       // 0-50, clean-lowend crossover before the wavefolder (Sound only), 0 = bypassed
+	uint8_t vowelRaw = 0;       // 0-50, Vowel filter: the source's own highs mixed back in, 0 = off
 
 	/// 0-50, how much to narrow stereo width below subBassMonoFreq towards mono, 0 = bypassed.
 	/// Read by both Sound/Synth's per-voice render (voice.cpp) and GlobalEffectableForClip's
