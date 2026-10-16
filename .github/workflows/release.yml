@@ -24,10 +24,10 @@ jobs:
     needs: build
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download Build Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ github.ref_name }}_Release_build_bundle
 
@@ -74,7 +74,7 @@ jobs:
           zip -j ./${{ github.ref_name }}.zip README.txt *.bin
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: 'Owlet Firmware ${{ github.ref_name }}'
           draft: false
